@@ -32,7 +32,7 @@ DATA_CHUNKS = [0]
 DATE_FILTER = 20191012  # min visit_date in data is 20191007 and the max is 20191013
 
 # encoding
-TOP_POPULAR_PRODUCTS = 6000
+N_TOP_PRODUCTS = 6000
 REMEMBER_WINDOW = 4
 MOVING_WINDOW = 4
 
@@ -59,7 +59,7 @@ DRY_RUN = True
 
 if DRY_RUN:
     NUM_EPOCHS = 1
-    TOP_POPULAR_PRODUCTS = 100
+    N_TOP_PRODUCTS = 100
     tmp_value = 1000
     batches_evaluation = 6
     batches_eval_size = 10
@@ -341,7 +341,6 @@ def join_integers(list_of_ints):
 ####################################################################################################
 
 # create a logfile for today, also add logging to stdout
-logging.handlers = []  # close loggers
 logging.basicConfig(
     filename="./logs/single_flow_rnn_{}.log".format(datetime.now().date()), level=logging.INFO
 )
@@ -378,7 +377,7 @@ all_questions = extract_sequences_from_column(df_filtered[INPUT_VAR])
 
 # we focus only in the top-N products
 popular_products_scope = extract_top_n(
-    list_of_list_products=all_questions, n_popular=TOP_POPULAR_PRODUCTS
+    list_of_list_products=all_questions, n_popular=N_TOP_PRODUCTS
 )
 
 
@@ -387,7 +386,7 @@ clean_list_of_products = clean_list_par(
     list_target=all_questions, products_in_scope=popular_products_scope
 )
 
-# check how many products where dropped from the data (see coverage of TOP_POPULAR_PRODUCTS)
+# check how many products where dropped from the data (see coverage of N_TOP_PRODUCTS)
 # result is roughly 70%
 top_n_product_coverage = (
     np.concatenate(clean_list_of_products).ravel().shape[0]
@@ -396,7 +395,7 @@ top_n_product_coverage = (
 
 logging.info(
     "Click coverage of top {} most popular products: {:.0}".format(
-        TOP_POPULAR_PRODUCTS, top_n_product_coverage
+        N_TOP_PRODUCTS, top_n_product_coverage
     )
 )
 
@@ -428,8 +427,6 @@ logging.info("data_encoded_test rows: {}".format(len(data_encoded_test)))
 logging.info("data_encoded_eval rows: {}".format(len(data_encoded_eval)))
 logging.info("data_encoded_train rows: {}".format(len(data_encoded_train)))
 
-data_encoded_test
-
 
 logging.info("Starting data tabulations")
 
@@ -448,16 +445,14 @@ for i in range(rounds):
         data_to_tabulate=data_encoded_train[ini_:end_],
         remem_window=REMEMBER_WINDOW,
         moving_window=MOVING_WINDOW,
-        vocabulary_size=TOP_POPULAR_PRODUCTS,
+        vocabulary_size=N_TOP_PRODUCTS,
     )
     if i == 0:
         dset_X_train = f.create_dataset(
-            "dataset_X_train", data=X, maxshape=(None, MOVING_WINDOW, TOP_POPULAR_PRODUCTS)
+            "dataset_X_train", data=X, maxshape=(None, MOVING_WINDOW, N_TOP_PRODUCTS)
         )
 
-        dset_Y_train = f.create_dataset(
-            "dataset_Y_train", data=Y, maxshape=(None, TOP_POPULAR_PRODUCTS)
-        )
+        dset_Y_train = f.create_dataset("dataset_Y_train", data=Y, maxshape=(None, N_TOP_PRODUCTS))
 
     else:
         new_rows = X.shape[0]
@@ -485,16 +480,14 @@ for i in range(rounds):
         data_to_tabulate=data_encoded_eval[ini_:end_],
         remem_window=REMEMBER_WINDOW,
         moving_window=MOVING_WINDOW,
-        vocabulary_size=TOP_POPULAR_PRODUCTS,
+        vocabulary_size=N_TOP_PRODUCTS,
     )
     if i == 0:
         dset_X_eval = f.create_dataset(
-            "dataset_X_eval", data=X, maxshape=(None, MOVING_WINDOW, TOP_POPULAR_PRODUCTS)
+            "dataset_X_eval", data=X, maxshape=(None, MOVING_WINDOW, N_TOP_PRODUCTS)
         )
 
-        dset_Y_eval = f.create_dataset(
-            "dataset_Y_eval", data=Y, maxshape=(None, TOP_POPULAR_PRODUCTS)
-        )
+        dset_Y_eval = f.create_dataset("dataset_Y_eval", data=Y, maxshape=(None, N_TOP_PRODUCTS))
 
     else:
         new_rows = X.shape[0]
@@ -522,16 +515,14 @@ for i in range(rounds):
         data_to_tabulate=data_encoded_test[ini_:end_],
         remem_window=REMEMBER_WINDOW,
         moving_window=MOVING_WINDOW,
-        vocabulary_size=TOP_POPULAR_PRODUCTS,
+        vocabulary_size=N_TOP_PRODUCTS,
     )
     if i == 0:
         dset_X_test = f.create_dataset(
-            "dataset_X_test", data=X, maxshape=(None, MOVING_WINDOW, TOP_POPULAR_PRODUCTS)
+            "dataset_X_test", data=X, maxshape=(None, MOVING_WINDOW, N_TOP_PRODUCTS)
         )
 
-        dset_Y_test = f.create_dataset(
-            "dataset_Y_test", data=Y, maxshape=(None, TOP_POPULAR_PRODUCTS)
-        )
+        dset_Y_test = f.create_dataset("dataset_Y_test", data=Y, maxshape=(None, N_TOP_PRODUCTS))
 
     else:
         new_rows = X.shape[0]
@@ -564,14 +555,28 @@ logging.info("Defining Network")
 
 
 class SequenceClassification:
-    def __init__(self, data, target, dropout, num_hidden, num_layers=1, learning_step=0.001):
+    def __init__(
+        self,
+        data,
+        target,
+        dropout,
+        num_hidden,
+        num_layers,
+        n_top_products,
+        embedding_dim,
+        learning_step=0.001,
+    ):
         self.data = data
         self.target = target
         self.dropout = dropout
         self._num_hidden = num_hidden
         self._num_layers = num_layers
+        self.n_top_products = n_top_products
+        self.embedding_dim = embedding_dim
         self.learning_step = learning_step
+
         self.model_def
+
         # self.training_
         self.prediction_
         self.error
@@ -580,56 +585,15 @@ class SequenceClassification:
     @lazy_property
     def model_def(self):
 
-        network = tf.contrib.rnn.GRUCell(self._num_hidden)
-        network = tf.contrib.rnn.DropoutWrapper(network, output_keep_prob=self.dropout)
-        network = tf.contrib.rnn.MultiRNNCell([network] * self._num_layers)
-        output, _ = tf.nn.dynamic_rnn(network, self.data, dtype=tf.float32)
-
-        # Select last output.
-        output = tf.transpose(output, [1, 0, 2])
-        last = tf.gather(output, int(output.get_shape()[0]) - 1)
-
-        # Softmax layer.
-        weight, bias = self._weight_and_bias(self._num_hidden, int(self.target.get_shape()[1]))
-        return last, weight, bias
-
-    @lazy_property
-    def prediction_(self, training_bool=True):
-        # Softmax layer.
-        last, weight, bias = self.model_def
-        output = tf.nn.softmax(tf.matmul(last, weight) + bias)
-
-        return output
-
-    @lazy_property
-    def cost(self):
-        cross_entropy = -tf.reduce_sum(self.target * tf.log(self.prediction_))
-        return cross_entropy
-
-    @lazy_property
-    def optimize(self):
-        learning_rate = self.learning_step
-        optimizer = tf.train.RMSPropOptimizer(learning_rate, decay=0.9, momentum=0.01)
-
-        gradient_vectors = optimizer.compute_gradients(self.cost)
-        capped_gradient_vectors = [
-            (tf.clip_by_value(grad, -4.0, 4.0), var) for grad, var in gradient_vectors
-        ]
-        # train_op = optimizer.apply_gradients(capped_gradient_vectors)
-        # return optimizer.minimize(self.cost)
-
-        return optimizer.apply_gradients(capped_gradient_vectors)
-
-    @lazy_property
-    def error(self):
-        mistakes = tf.not_equal(tf.argmax(self.target, 1), tf.argmax(self.prediction_, 1))
-        return tf.reduce_mean(tf.cast(mistakes, tf.float32))
-
-    @staticmethod
-    def _weight_and_bias(in_size, out_size):
-        weight = tf.truncated_normal([in_size, out_size], stddev=0.01)
-        bias = tf.constant(0.1, shape=[out_size])
-        return tf.Variable(weight), tf.Variable(bias)
+        model = tf.keras.Sequential()
+        model.add(
+            tf.keras.layers.Embedding(input_dim=self.n_top_products, output_dim=self.embedding_dim)
+        )
+        model.add(tf.keras.layers.GRUCell(self.embedding_dim, dropout=self.dropout))
+        model.add(tf.keras.layers.Dense(10, activation="softmax"))
+        model.compile(loss="binary_crossentropy", optimizer="rmsprop", metrics=["accuracy"])
+        model.summary()
+        # model.fit(X_train, y_train, epochs=3, batch_size=64)
 
 
 # list what CPUs and GPUs are avalaible
@@ -638,8 +602,8 @@ logging.info("Available processing units in machine: {}".format(get_available_pr
 
 # with tf.device("/gpu:0"):
 with tf.device("/cpu:0"):
-    data = tf.placeholder(tf.float32, [None, MOVING_WINDOW, TOP_POPULAR_PRODUCTS])
-    target = tf.placeholder(tf.float32, [None, TOP_POPULAR_PRODUCTS])
+    data = tf.placeholder(tf.float32, [None, MOVING_WINDOW, N_TOP_PRODUCTS])
+    target = tf.placeholder(tf.float32, [None, N_TOP_PRODUCTS])
     dropout = tf.placeholder(tf.float32)
     model = SequenceClassification(
         data, target, dropout, num_hidden=NUM_UNITS, learning_step=0.0001
@@ -650,11 +614,6 @@ total_batches = math.floor(tmp_value / BATCH_SIZE)
 logging.info("Total batches: {}".format(total_batches))
 total_eval_records = dset_X_eval.shape[0]
 
-
-dset_X_train
-dset_Y_train
-
-dset_X_train[:, 1].shape
 
 logging.info("Starting TensorFlow training session at {}".format(datetime.now()))
 t0 = time.time()  # log time of training start
@@ -770,9 +729,9 @@ logging.info("Test set MAP@5: {:.6}".format(map_at_n))
 products_recommended = np.vstack(products_recom_chunks)
 list_suggested_recomnd = list(np.apply_along_axis(join_integers, axis=1, arr=products_recommended))
 
-recom_product_coverage = len(np.unique(products_recommended)) / TOP_POPULAR_PRODUCTS
+recom_product_coverage = len(np.unique(products_recommended)) / N_TOP_PRODUCTS
 logging.info(
-    "Coverage of recommended products (vs TOP_POPULAR_PRODUCTS): {}".format(recom_product_coverage)
+    "Coverage of recommended products (vs N_TOP_PRODUCTS): {}".format(recom_product_coverage)
 )
 
 ####################################################################################################
@@ -781,4 +740,4 @@ logging.info(
 
 f.close()  # stop writing in h5py file
 sess.close()  # stop tensorflow session
-logging.handlers = []  # close loggers
+logging.shutdown()  # close loggers
