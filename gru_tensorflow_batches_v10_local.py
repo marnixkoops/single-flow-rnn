@@ -22,6 +22,8 @@ import logging
 import warnings
 from datetime import datetime
 from tensorflow.python.client import device_lib
+from sklearn.metrics import accuracy_score
+
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 
@@ -29,7 +31,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 DATA_PATH = "./data/ga_product_sequence_20191013.csv"
 INPUT_VAR = "product_sequence"
 DATA_CHUNKS = [0]
-DATE_FILTER = 20191012  # min visit_date in data is 20191007 and the max is 20191013
+DATE_FILTER = 20191006  # min visit_date in data is 20191007 and the max is 20191013
 
 # encoding
 TOP_POPULAR_PRODUCTS = 6000
@@ -58,11 +60,12 @@ prediction_batch = 1000
 DRY_RUN = True
 
 if DRY_RUN:
-    NUM_EPOCHS = 1
-    TOP_POPULAR_PRODUCTS = 100
-    tmp_value = 1000
+    TOP_POPULAR_PRODUCTS = 1000
+    NUM_EPOCHS = 2
+    NUM_UNITS = 9000
+    tmp_value = 960000
     batches_evaluation = 6
-    batches_eval_size = 10
+    batches_eval_size = 8000
     prediction_batch = 100
 
 
@@ -371,7 +374,7 @@ df_filtered = read_raw_data_pandas(
 
 # take small subset of data for debugging purposes
 if DRY_RUN:
-    df_filtered = df_filtered.tail(10000).copy()
+    df_filtered = df_filtered.tail(1000000).copy()
 
 # these are all the sequences in the filtered dataset
 all_questions = extract_sequences_from_column(df_filtered[INPUT_VAR])
@@ -564,7 +567,7 @@ logging.info("Defining Network")
 
 
 class SequenceClassification:
-    def __init__(self, data, target, dropout, num_hidden, num_layers=1, learning_step=0.001):
+    def __init__(self, data, target, dropout, num_hidden, num_layers=1, learning_step=0.0001):
         self.data = data
         self.target = target
         self.dropout = dropout
@@ -582,7 +585,7 @@ class SequenceClassification:
 
         network = tf.contrib.rnn.GRUCell(self._num_hidden)
         network = tf.contrib.rnn.DropoutWrapper(network, output_keep_prob=self.dropout)
-        network = tf.contrib.rnn.MultiRNNCell([network] * self._num_layers)
+        # network = tf.contrib.rnn.MultiRNNCell([network] * self._num_layers)
         output, _ = tf.nn.dynamic_rnn(network, self.data, dtype=tf.float32)
 
         # Select last output.
@@ -653,7 +656,6 @@ total_eval_records = dset_X_eval.shape[0]
 
 dset_X_train
 dset_Y_train
-
 dset_X_train[:, 1].shape
 
 logging.info("Starting TensorFlow training session at {}".format(datetime.now()))
@@ -761,7 +763,11 @@ for i in range(number_of_chunks_eval - 1):
 
 map_at_n = reduce(lambda x, y: x + y, metric_per_batch) / len(metric_per_batch)
 logging.info("Test set MAP@5: {:.6}".format(map_at_n))
-
+logging.info(
+    "Test set Accuracy@1: {:.6}".format(
+        accuracy_score(test_actuals_decoded, prod_recom[:, 1]) * 100
+    )
+)
 
 ####################################################################################################
 # TEST SET PREDICTIONS
@@ -769,6 +775,8 @@ logging.info("Test set MAP@5: {:.6}".format(map_at_n))
 
 products_recommended = np.vstack(products_recom_chunks)
 list_suggested_recomnd = list(np.apply_along_axis(join_integers, axis=1, arr=products_recommended))
+
+list_suggested_recomnd
 
 recom_product_coverage = len(np.unique(products_recommended)) / TOP_POPULAR_PRODUCTS
 logging.info(
@@ -781,4 +789,3 @@ logging.info(
 
 f.close()  # stop writing in h5py file
 sess.close()  # stop tensorflow session
-logging.handlers = []  # close loggers
