@@ -1,4 +1,5 @@
 *.DS_Store
 *.hdf5
+model/
 mlruns/
 info.txt

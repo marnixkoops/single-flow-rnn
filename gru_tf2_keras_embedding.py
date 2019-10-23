@@ -13,7 +13,6 @@ with warnings.catch_warnings():  # avoid futurewarnings since we a lot of deprec
     import tensorflow as tf
     from tensorflow import keras
     from tensorflow.python.client import device_lib
-    from tensorflow.contrib.learn.python.learn import monitors as monitor_lib
 
 tf.enable_eager_execution()
 # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
@@ -34,22 +33,23 @@ INPUT_VAR = "product_sequence"
 
 # constants
 N_TOP_PRODUCTS = 6000
-EMBED_DIM = 896
-N_HIDDEN_UNITS = 2048
+EMBED_DIM = 512
+N_HIDDEN_UNITS = 3000
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
+N_EPOCHS = 2
 LEARNING_RATE = 0.001
-BATCH_SIZE = 512
-MAX_STEPS = 3000
+BATCH_SIZE = 256
+MAX_STEPS = 5e3
 DROPOUT = 1
 OPTIMIZER = "RMSProp"
 CLIP_GRADIENTS = 1.0  # float
 
-TRAIN_RATIO = 0.79
-VAL_RATIO = 0.01
-TEST_RATIO = 0.20
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.1
+TEST_RATIO = 0.2
 
 # debugging constants
 if DRY_RUN:
@@ -57,6 +57,7 @@ if DRY_RUN:
     EMBED_DIM = 32
     N_HIDDEN_UNITS = 64
     BATCH_SIZE = 16
+    N_EPOCHS = 1
 
 
 ####################################################################################################
@@ -195,67 +196,46 @@ print("\n[⚡] Starting model training & evaluation")
 
 if not DRY_RUN:
     mlflow.start_run()  # start mlflow run for experiment tracking
-
 t_train = time.time()  # start timer #2
+
+model = tf.keras.Sequential()
+model.add(tf.keras.layers.Embedding(input_dim=N_TOP_PRODUCTS, output_dim=EMBED_DIM))
+model.add(tf.keras.layers.GRUCell(N_HIDDEN_UNITS))
+model.add(tf.keras.layers.Dense(10, activation="softmax"))
+model.summary()
+
+model.fit(X_train, y_train, validation_data=(X_val, y_val), batch_size=BATCH_SIZE, epochs=N_EPOCHS)
 
 
 def embedding_rnn_model(
-    input_sequence,
-    target,
-    vocab_size=N_TOP_PRODUCTS,
-    embed_dim=EMBED_DIM,
-    num_units=N_HIDDEN_UNITS,
-    dtype=DTYPE_GRU,
-    dropout=DROPOUT,
-    optimizer=OPTIMIZER,
-    clip_gradients=CLIP_GRADIENTS,
+    vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, num_units=N_HIDDEN_UNITS, batch_size=BATCH_SIZE
 ):
-    """Defines a Recurrent Neural Network with GRU cells for seq2seq modeling purposes.
-    Input sequences are embedded to reduce (1) data dimensionality and (2) required network complexity.
-    Both (1) and (2) greatly reduce computational effort of model training and prediction.
-    Args:
-        input_sequence (array): sequence of input items.
-        target (array): The next item after the input_sequence.
-    Returns:
-        type: A Recurrent Neural Network model.
-    """
-    # Convert indexes of words into embeddings. This creates embeddings matrix of
-    # [n_words, EMBEDDING_SIZE] and then maps word indexes of the sequence into
-    # [batch_size, sequence_length, EMBEDDING_SIZE].
-    embeddings = tf.contrib.layers.embed_sequence(
-        input_sequence, vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, trainable=True
+    model = tf.keras.Sequential(
+        [
+            tf.keras.layers.Embedding(
+                N_TOP_PRODUCTS, EMBED_DIM, batch_input_shape=[BATCH_SIZE, None]
+            ),
+            tf.keras.layers.GRUCell(
+                N_HIDDEN_UNITS,
+                return_sequences=True,
+                stateful=True,
+                recurrent_initializer="glorot_uniform",
+            ),
+            tf.keras.layers.Dense(N_TOP_PRODUCTS),
+        ]
     )
-    # embeddings_list = tf.unstack(embedding, axis=1)  # messes up the rank of the tensor
-
-    cell = tf.nn.rnn_cell.GRUCell(N_HIDDEN_UNITS)
-    # cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=DROPOUT)
-
-    # Create an unrolled Recurrent Neural Networks to length of max_sequence_length and passes
-    # word_list as inputs for each unit.
-    output, state = tf.nn.dynamic_rnn(
-        cell, embeddings, dtype=DTYPE_GRU, time_major=False
-    )  # time_major = False means input is of shape [batch_size, sequence_length, EMBEDDING_SIZE]
-    # instead of [sequence_length, batch_size, EMBEDDING_SIZE]
-
-    # Given encoding of RNN, take encoding of last step (e.g hidden size of the neural network of
-    # last step) and pass it as features to fully connected layer to output probabilities per class.
-    # Note that the target is required to be one-hot-encoded to outut logits per class.
-    target = tf.one_hot(target, N_TOP_PRODUCTS, 1, 0)
-    logits = tf.contrib.layers.fully_connected(state, N_TOP_PRODUCTS, activation_fn=None)
-    loss = tf.contrib.losses.softmax_cross_entropy(logits, target)
-    train_op = tf.contrib.layers.optimize_loss(
-        loss,
-        tf.contrib.framework.get_global_step(),
-        optimizer=OPTIMIZER,
-        learning_rate=LEARNING_RATE,
-        clip_gradients=CLIP_GRADIENTS,
-    )
-
-    return ({"class": tf.argmax(logits, 1), "prob": tf.nn.softmax(logits)}, loss, train_op)
+    return model
 
 
-model = tf.contrib.learn.Estimator(model_fn=embedding_rnn_model)
-model.fit(X_train, y_train, max_steps=MAX_STEPS, batch_size=BATCH_SIZE)
+model = embedding_rnn_model(
+    vocab_size=N_TOP_PRODUCTS,
+    embedding_dim=EMBED_DIM,
+    rnn_units=N_HIDDEN_UNITS,
+    batch_size=BATCH_SIZE,
+)
+
+model.compile(loss="categorical_crossentropy", optimizer="RMSprop", metrics=["loss", "accuracy"])
+model.fit(X_train, y_train, validation_data=(X_val, y_val), batch_size=BATCH_SIZE, epochs=N_EPOCHS)
 
 train_time = time.time() - t_train
 print(
@@ -265,7 +245,7 @@ print(
 )
 
 t_pred = time.time()
-print("\n[⚡] Creating recommendations on test set (probs for all N products per sequence)")
+print("\n[⚡] Creating recommendations on test set (logits for all N products / sequence)")
 # y_pred_class = np.array([p["class"] for p in model.predict(X_test, as_iterable=True)])
 y_pred_probs = np.array([p["prob"] for p in model.predict(X_test, as_iterable=True)])
 pred_time = time.time() - t_pred
@@ -353,7 +333,7 @@ if not DRY_RUN:
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log executed code
-    mlflow.log_artifact("gru_tensorflow_embedding.py")
+    mlflow.log_artifact("gru_tf2_keras_embedding.py")
 
     print("[⚡] Elapsed total time: {:.3} minutes".format((time.time() - t_prep) / 60))
 
