@@ -1,12 +1,12 @@
+import os
 import numpy as np
 import pandas as pd
 import time
-import inspect
 import mlflow
 import warnings
 
 from ml_metrics import average_precision
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, log_loss
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 with warnings.catch_warnings():  # avoid futurewarnings since we a lot of deprecated stuff
@@ -16,7 +16,7 @@ with warnings.catch_warnings():  # avoid futurewarnings since we a lot of deprec
     from tensorflow.python.client import device_lib
 
 tf.enable_eager_execution()
-tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
+# tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 
 ####################################################################################################
@@ -24,7 +24,7 @@ tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 ####################################################################################################
 
 # run mode
-DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
+DRY_RUN = True  # runs flow on small subset of data for speed and disables mlfow tracking
 DOUBLE_DATA = False  # loads two weeks worth of raw data instead of 1 week
 
 # input
@@ -33,19 +33,19 @@ DATA_PATH2 = "./data/ga_product_sequence_20191013.csv"
 INPUT_VAR = "product_sequence"
 
 # constants
-N_TOP_PRODUCTS = 3000
-EMBED_DIM = 128
-N_HIDDEN_UNITS = 1024
+N_TOP_PRODUCTS = 6000
+EMBED_DIM = 512
+N_HIDDEN_UNITS = 2048
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
-MIN_PRODUCTS = 2  # sequences with less are considered invalid and removed
+MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
 LEARNING_RATE = 0.001
-BATCH_SIZE = 128
+BATCH_SIZE = 256
 MAX_STEPS = 5e3
 DROPOUT = 1
 OPTIMIZER = "RMSProp"
-CLIP_GRADIENTS = 1.0  # float required
+CLIP_GRADIENTS = 1.0  # float
 
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.1
@@ -57,6 +57,9 @@ if DRY_RUN:
     EMBED_DIM = 32
     N_HIDDEN_UNITS = 64
     BATCH_SIZE = 16
+
+# list what CPUs and GPUs are avalaible
+print("[⚡] Available processing units in machine: \n{}\n".format(device_lib.list_local_devices()))
 
 
 ####################################################################################################
@@ -89,7 +92,7 @@ print("     Data contains {} sequences from {} to {}".format(len(sequence_df), M
 
 t_prep = time.time()  # start timer #1
 
-print("\n[⚡] Tokenizing, padding & filtering sequences")
+print("\n[⚡] Tokenizing, padding, filtering & splitting sequences")
 print("     Including top {} most popular products".format(N_TOP_PRODUCTS))
 # define tokenizer to encode sequences while including N most popular items (occurence)
 tokenizer = keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
@@ -103,18 +106,22 @@ padded_sequences = tf.keras.preprocessing.sequence.pad_sequences(sequences, padd
 
 
 def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
-    """Filters valid sequences. At least 2 products are required to have an input-output pair for
-    training. Hence, a sequence should have > 1 non-zero element.
+    """Short summary.
+
     Args:
-        array (type): Description of parameter `array`.
-        min_items (type): Description of parameter `min_items`.
+        array (array): Array with sequences encoded as integers.
+        min_items (type): Minimum number of products required per sequence.
+
     Returns:
-        type: Description of returned object.
+        type: Array with sequences after filtering valid entries.
+
     """
+    pre_len = len(array)
+    array = array[array[:, -1] != 0].copy()  # remove all sequences that end in a 0
     valid_sequence_mask = np.sum((array != 0), axis=1) >= min_items  # create mask
-    filtered_padded_sequences = array[valid_sequence_mask].copy()
-    print("     Removing {} invalid sequences".format(sum(~valid_sequence_mask)))
-    return filtered_padded_sequences
+    valid_sequences = array[valid_sequence_mask].copy()
+    print("     Removed {} invalid sequences".format(pre_len - len(valid_sequences)))
+    return valid_sequences
 
 
 padded_sequences = filter_valid_sequences(padded_sequences, min_items=MIN_PRODUCTS)
@@ -167,7 +174,7 @@ X_train, y_train = padded_sequences_train[:-val_index, :-1], padded_sequences_tr
 X_val, y_val = padded_sequences_train[:val_index, :-1], padded_sequences_train[:val_index, -1]
 X_test, y_test = padded_sequences_test[:, -5:-1], padded_sequences_test[:, -1]
 
-print("[⚡] Dataset dimensions:")
+print("[⚡] Generated dataset dimensions:")
 print("     Training X {}, y {}".format(X_train.shape, y_train.shape))
 print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
 print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
@@ -176,7 +183,7 @@ print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
 del padded_sequences_train, padded_sequences_test
 
 print(
-    "[⚡] Elapsed time for tokenizing, padding and filtering: {:.3} seconds".format(
+    "[⚡] Elapsed time for tokenizing, padding, filtering & splitting: {:.3} seconds".format(
         time.time() - t_prep
     )
 )
@@ -220,19 +227,21 @@ def embedding_rnn_model(
     embeddings = tf.contrib.layers.embed_sequence(
         input_sequence, vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, trainable=True
     )
-    # embeddings_list = tf.unstack(embedding, axis=1)
+    # embeddings_list = tf.unstack(embedding, axis=1)  # messes up the rank of the tensor
 
     cell = tf.nn.rnn_cell.GRUCell(N_HIDDEN_UNITS)
     # cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=DROPOUT)
 
-    # Create an unrolled Recurrent Neural Networks to length of MAX_DOCUMENT_LENGTH and passes
+    # Create an unrolled Recurrent Neural Networks to length of max_sequence_length and passes
     # word_list as inputs for each unit.
     output, state = tf.nn.dynamic_rnn(
-        cell, embeddings, dtype=DTYPE_GRU  # time_major=False
+        cell, embeddings, dtype=DTYPE_GRU, time_major=False
     )  # time_major = False means input is of shape [batch_size, sequence_length, EMBEDDING_SIZE]
-    # as opposed to [sequence_length, batch_size, EMBEDDING_SIZE]
+    # instead of [sequence_length, batch_size, EMBEDDING_SIZE]
+
     # Given encoding of RNN, take encoding of last step (e.g hidden size of the neural network of
     # last step) and pass it as features to fully connected layer to output probabilities per class.
+    # Note that the target is required to be one-hot-encoded to outut logits per class.
     target = tf.one_hot(target, N_TOP_PRODUCTS, 1, 0)
     logits = tf.contrib.layers.fully_connected(state, N_TOP_PRODUCTS, activation_fn=None)
     loss = tf.contrib.losses.softmax_cross_entropy(logits, target)
@@ -289,17 +298,23 @@ def generate_predicted_sequences(y_pred_probs, output_length=10):
 # process recomendations
 predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
 predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5 recommendations
+predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 5 recommendations
 y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation
 
+score = np.round(accuracy_score(y_test, y_pred), 4)
+map3 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_3, k=3), 4)
 map5 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_5, k=5), 4)
 map10 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_10, k=10), 4)
 score = np.round(accuracy_score(y_test, y_pred), 4)
+# cross_entropy = np.round(log_loss(y_test, predicted_sequences_5[:,0]), 4)
 coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
 # recom_novelty = sum([(predicted_sequences[i] not in X_test[i]) for i in range(len(y_test))]) / len(y_test)
 
 print("     Accuracy @ 1: {:.4}%".format(score * 100))
+print("     MAP @ 3: {:.4}%".format(map3 * 100))
 print("     MAP @ 5: {:.4}%".format(map5 * 100))
 print("     MAP @ 10: {:.4}%".format(map10 * 100))
+# print("     Cross Entropy Loss: {:.4}%".format(cross_entropy))
 print("     Coverage @ 1: {:.4}%".format(coverage * 100))
 # print("     Novelty @ 1: {:.4}% (recom products not in input)".format(recom_novelty * 100))
 
@@ -330,12 +345,13 @@ if not DRY_RUN:
 
     # Log metrics
     mlflow.log_metric("Accuracy", score)
+    mlflow.log_metric("MAP 3", map3)
     mlflow.log_metric("MAP 5", map5)
     mlflow.log_metric("MAP 10", map10)
     #    mlflow.log_metric("Cross Entropy", loss)
     mlflow.log_metric("coverage", coverage)
     #    mlflow.log_metric("novelty", novelty)
-    mlflow.log_metric("Train mins", np.round(train_time / 60), 1)
+    mlflow.log_metric("Train mins", np.round(train_time / 60), 2)
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log executed code
