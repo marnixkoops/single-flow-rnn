@@ -3,3 +3,4 @@
 model/
 mlruns/
 info.txt
+.ftp*

@@ -1,4 +1,3 @@
-import parser
 import numpy as np
 import pandas as pd
 import time
@@ -18,31 +17,28 @@ with warnings.catch_warnings():  # avoid futurewarnings since we a lot of deprec
 tf.enable_eager_execution()
 # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
-
 ####################################################################################################
 # EXPERIMENT SETTINGS
 ####################################################################################################
 
 # run mode
-DRY_RUN = True  # runs flow on small subset of data for speed and disables mlfow tracking
+DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
 DOUBLE_DATA = False  # loads two weeks worth of raw data instead of 1 week
 
 # input
 DATA_PATH1 = "./data/ga_product_sequence_20191013.csv"
-DATA_PATH2 = "./data/ga_product_sequence_20191013.csv"
+DATA_PATH2 = "./data/ga_product_sequence_20191020.csv"
 INPUT_VAR = "product_sequence"
-
-# output
-MODEL_DIR = "./model"
 
 # constants
 N_TOP_PRODUCTS = 6000
 EMBED_DIM = 512
-N_HIDDEN_UNITS = 2048
+N_HIDDEN_UNITS = 3000
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
+N_EPOCHS = 2
 LEARNING_RATE = 0.001
 BATCH_SIZE = 256
 MAX_STEPS = 5e3
@@ -60,9 +56,7 @@ if DRY_RUN:
     EMBED_DIM = 32
     N_HIDDEN_UNITS = 64
     BATCH_SIZE = 16
-
-# list what CPUs and GPUs are avalaible
-print("[⚡] Available processing units in machine: \n{}\n".format(device_lib.list_local_devices()))
+    N_EPOCHS = 1
 
 
 ####################################################################################################
@@ -193,9 +187,31 @@ print(
 
 
 ####################################################################################################
-# DEFINE AND TRAIN RECURRENT NEURAL NETWORK
+# DEFINE AND TRAIN NEURAL ATTENTION NETWORK
 ####################################################################################################
-# https://machinelearnings.co/tensorflow-text-classification-615198df9231
+
+# seq2seq with attention
+# https://www.tensorflow.org/tutorials/text/nmt_with_attention
+
+
+# Transformer model with self-attention
+# Note: If the input does have a temporal/spatial relationship, like text, some positional encoding
+# must be added or the model will effectively see a bag of words.
+# https://www.tensorflow.org/tutorials/text/transformer
+
+# Masking
+# Mask all the pad tokens in the batch of sequence. It ensures that the model does not treat
+# padding as the input. The mask indicates where pad value 0 is present: it outputs a 1 at those
+# locations, and a 0 otherwise.
+
+
+def create_padding_mask(seq):
+    seq = tf.cast(tf.math.equal(seq, 0), tf.float32)
+
+    # add extra dimensions to add the padding
+    # to the attention logits.
+    return seq[:, tf.newaxis, tf.newaxis, :]  # (batch_size, 1, 1, seq_len)
+
 
 print("\n[⚡] Starting model training & evaluation")
 
@@ -204,159 +220,12 @@ if not DRY_RUN:
 t_train = time.time()  # start timer #2
 
 
-# def embedding_rnn_model(
-#     input_sequence,
-#     target,
-#     vocab_size=N_TOP_PRODUCTS,
-#     embed_dim=EMBED_DIM,
-#     num_units=N_HIDDEN_UNITS,
-#     dtype=DTYPE_GRU,
-#     dropout=DROPOUT,
-#     optimizer=OPTIMIZER,
-#     clip_gradients=CLIP_GRADIENTS,
-# ):
-#     """Defines a Recurrent Neural Network with GRU cells for seq2seq modeling purposes.
-#     Input sequences are embedded to reduce (1) data dimensionality and (2) required network complexity.
-#     Both (1) and (2) greatly reduce computational effort of model training and prediction.
-#     Args:
-#         input_sequence (array): sequence of input items.
-#         target (array): The next item after the input_sequence.
-#     Returns:
-#         type: A Recurrent Neural Network model.
-#     """
-#     # Convert indexes of words into embeddings. This creates embeddings matrix of
-#     # [n_words, EMBEDDING_SIZE] and then maps word indexes of the sequence into
-#     # [batch_size, sequence_length, EMBEDDING_SIZE].
-#     embeddings = tf.contrib.layers.embed_sequence(
-#         input_sequence, vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, trainable=True
-#     )
-#     # embeddings_list = tf.unstack(embedding, axis=1)  # messes up the rank of the tensor
-#
-#     cell = tf.nn.rnn_cell.GRUCell(N_HIDDEN_UNITS)
-#     # cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=DROPOUT)
-#
-#     # Create an unrolled Recurrent Neural Networks to length of max_sequence_length and passes
-#     # word_list as inputs for each unit.
-#     output, state = tf.nn.dynamic_rnn(
-#         cell, embeddings, dtype=DTYPE_GRU, time_major=False
-#     )  # time_major = False means input is of shape [batch_size, sequence_length, EMBEDDING_SIZE]
-#     # instead of [sequence_length, batch_size, EMBEDDING_SIZE]
-#
-#     # Given encoding of RNN, take encoding of last step (e.g hidden size of the neural network of
-#     # last step) and pass it as features to fully connected layer to output probabilities per class.
-#     # Note that the target is required to be one-hot-encoded to outut logits per class.
-#     target = tf.one_hot(target, N_TOP_PRODUCTS, 1, 0)
-#     logits = tf.contrib.layers.fully_connected(state, N_TOP_PRODUCTS, activation_fn=None)
-#     loss = tf.contrib.losses.softmax_cross_entropy(logits, target)
-#     train_op = tf.contrib.layers.optimize_loss(
-#         loss,
-#         tf.contrib.framework.get_global_step(),
-#         optimizer=OPTIMIZER,
-#         learning_rate=LEARNING_RATE,
-#         clip_gradients=CLIP_GRADIENTS,
-#     )
-#
-#     return ({"class": tf.argmax(logits, 1), "prob": tf.nn.softmax(logits)}, loss, train_op)
-#
-#
-# model = tf.contrib.learn.Estimator(model_fn=embedding_rnn_model)
-# model.fit(X_train, y_train, max_steps=MAX_STEPS, batch_size=BATCH_SIZE)
-# train_time = time.time() - t_train
-# print(
-#     "[⚡] Elapsed time for training on {} sequences: {:.3} minutes".format(
-#         len(y_train), train_time / 60
-#     )
-# )
-
-
-####################################################################################################
-# TensorFlow Core Estimator API
-####################################################################################################
-
-# data input pipeline for train and evaluate
-def train_input_fn(x=X_train, y=y_train):
-    y = tf.one_hot(y_train, N_TOP_PRODUCTS, 1, 0)
-    return tf.estimator.inputs.numpy_input_fn(x, y, shuffle=True)
-
-
-def eval_input_fn(x=X_val, y=y_val):
-    y = tf.one_hot(y_test, N_TOP_PRODUCTS, 1, 0)
-    return tf.estimator.inputs.numpy_input_fn(x, y, shuffle=True)
-
-
-#
-# def serving_input_fn():
-#     return tf.estimator.export.ServingInputReceiver
-
-
-def embedding_rnn_model(features, labels, mode, params):
-    embeddings = tf.contrib.layers.embed_sequence(
-        features, vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, trainable=True
-    )
-    cell = tf.nn.rnn_cell.GRUCell(N_HIDDEN_UNITS)
-    output, state = tf.nn.dynamic_rnn(cell, embeddings, dtype=DTYPE_GRU, time_major=False)
-    # labels = tf.one_hot(labels, N_TOP_PRODUCTS, 1, 0)
-    logits = tf.contrib.layers.fully_connected(state, N_TOP_PRODUCTS, activation_fn=None)
-    loss = tf.contrib.losses.softmax_cross_entropy(logits, labels)
-    train_op = tf.contrib.layers.optimize_loss(
-        loss,
-        tf.contrib.framework.get_global_step(),
-        optimizer=OPTIMIZER,
-        learning_rate=LEARNING_RATE,
-        clip_gradients=CLIP_GRADIENTS,
-    )
-    predictions_dict = {"class": tf.argmax(logits, 1), "prob": tf.nn.softmax(logits)}
-
-    if mode == tf.estimator.ModeKeys.TRAIN or mode == tf.estimator.ModeKeys.EVAL:
-        eval_metrics = {
-            "cross-entropy loss": loss,
-            "accuracy": tf.metrics.accuracy(tf.argmax(logits, 1), labels),
-        }
-    else:
-        eval_metrics = None
-
-    return tf.estimator.EstimatorSpec(
-        mode=mode,
-        predictions=predictions_dict,
-        loss=loss,
-        train_op=train_op,
-        eval_metric_ops=eval_metrics,
-        export_outputs=predictions_dict,
-    )
-
-
-parameters = {
-    "vocab_size": N_TOP_PRODUCTS,
-    "embed_dim": EMBED_DIM,
-    "num_units": N_HIDDEN_UNITS,
-    "dtype": DTYPE_GRU,
-    "dropout": DROPOUT,
-    "optimizer": OPTIMIZER,
-    "clip_gradients": CLIP_GRADIENTS,
-}
-
-training_config = tf.estimator.RunConfig(model_dir="./model", save_checkpoints_steps=1000)
-model = tf.estimator.Estimator(
-    model_fn=embedding_rnn_model, model_dir=MODEL_DIR, config=training_config, params=parameters
-)
-
-# exporter = tf.estimator.LatestExporter("latest_exporter", serving_input_fn)
-
-train_spec = tf.estimator.TrainSpec(input_fn=train_input_fn, max_steps=100)
-eval_spec = tf.estimator.EvalSpec(input_fn=eval_input_fn)  # , exporters=exporter)
-
-tf.estimator.train_and_evaluate(model, train_spec, eval_spec)
-
 train_time = time.time() - t_train
 print(
     "[⚡] Elapsed time for training on {} sequences: {:.3} minutes".format(
         len(y_train), train_time / 60
     )
 )
-
-
-####################################################################################################
-
 
 t_pred = time.time()
 print("\n[⚡] Creating recommendations on test set (logits for all N products / sequence)")
@@ -404,7 +273,6 @@ coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
 # recom_novelty = sum([(predicted_sequences[i] not in X_test[i]) for i in range(len(y_test))]) / len(y_test)
 
 print("     Accuracy @ 1: {:.4}%".format(score * 100))
-print("     MAP @ 3: {:.4}%".format(map3 * 100))
 print("     MAP @ 5: {:.4}%".format(map5 * 100))
 print("     MAP @ 10: {:.4}%".format(map10 * 100))
 # print("     Cross Entropy Loss: {:.4}%".format(cross_entropy))
@@ -419,8 +287,14 @@ print("     Coverage @ 1: {:.4}%".format(coverage * 100))
 if not DRY_RUN:
     print("[⚡] Logging experiment to mlflow")
 
+    # check if we are runnnig on GPU (Cloud) or CPU (local)
+    if "GPU" in str(device_lib.list_local_devices()):
+        MACHINE = "cloud"
+    else:
+        MACHINE = "local"
+
     # Set tags
-    mlflow.set_tags({"double_data": DOUBLE_DATA, "tf": tf.__version__})
+    mlflow.set_tags({"machine": MACHINE, "tf": tf.__version__, "double_data": DOUBLE_DATA})
 
     # Log parameters
     mlflow.log_param("n_products", N_TOP_PRODUCTS)
@@ -448,7 +322,7 @@ if not DRY_RUN:
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log executed code
-    mlflow.log_artifact("gru_tensorflow_core_estimator_embedding.py")
+    mlflow.log_artifact("gru_tf2_keras_embedding.py")
 
     print("[⚡] Elapsed total time: {:.3} minutes".format((time.time() - t_prep) / 60))
 

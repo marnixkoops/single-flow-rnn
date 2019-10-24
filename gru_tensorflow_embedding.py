@@ -1,11 +1,12 @@
 import numpy as np
 import pandas as pd
 import time
+
 import mlflow
 import warnings
 
 from ml_metrics import average_precision
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import accuracy_score
 
 warnings.simplefilter(action="ignore", category=FutureWarning)
 with warnings.catch_warnings():  # avoid futurewarnings since we a lot of deprecated stuff
@@ -28,28 +29,30 @@ DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfo
 DOUBLE_DATA = False  # loads two weeks worth of raw data instead of 1 week
 
 # input
-DATA_PATH1 = "./data/ga_product_sequence_20191013.csv"
-DATA_PATH2 = "./data/ga_product_sequence_20191013.csv"
+DATA_PATH1 = "marnix-single-flow-rnn/data/ga_product_sequence_20191013.csv"
+DATA_PATH2 = "marnix-single-flow-rnn/data/ga_product_sequence_20191020.csv"
 INPUT_VAR = "product_sequence"
 
 # constants
-N_TOP_PRODUCTS = 6000
-EMBED_DIM = 896
-N_HIDDEN_UNITS = 2048
+# top 6000 products is ~70% of views, 8000 is 80%, 10000 is ~84%, 12000 is ~87%, 15000 is ~90%
+N_TOP_PRODUCTS = 10000
+EMBED_DIM = 2048
+N_HIDDEN_UNITS = 4096
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
 LEARNING_RATE = 0.001
 BATCH_SIZE = 512
-MAX_STEPS = 3000
+MAX_STEPS = 5000
 DROPOUT = 1
 OPTIMIZER = "RMSProp"
 CLIP_GRADIENTS = 1.0  # float
 
-TRAIN_RATIO = 0.79
-VAL_RATIO = 0.01
+TRAIN_RATIO = 0.799
+VAL_RATIO = 0.001
 TEST_RATIO = 0.20
+SHUFFLE_TRAIN_SET = True
 
 # debugging constants
 if DRY_RUN:
@@ -96,6 +99,7 @@ tokenizer = keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
 # encode sequences
 tokenizer.fit_on_texts(sequence_df["product_sequence"])
 sequences = tokenizer.texts_to_sequences(sequence_df["product_sequence"])
+
 
 # pre-pad sequences with 0's, length is based on longest present sequence
 # this is required to transform the variable length sequences into equal train-test pairs
@@ -164,6 +168,10 @@ print("     Generated {} sequences for training/validation".format(len(padded_se
 # filter sequences, note that due to reshaping again invalid sequences can be generated
 padded_sequences_train = filter_valid_sequences(padded_sequences_train, min_items=MIN_PRODUCTS)
 
+# shuffle training sequences randomly (rows, not within sequences ofcourse)
+if SHUFFLE_TRAIN_SET:
+    np.random.shuffle(padded_sequences_train)  # shuffles in-place
+
 # split sequences into subsets for training/validation/testing
 # to predict 1 sequence per user in the test set we predict based on the last 4 items
 val_index = int(VAL_RATIO * len(padded_sequences_train))
@@ -227,7 +235,8 @@ def embedding_rnn_model(
     )
     # embeddings_list = tf.unstack(embedding, axis=1)  # messes up the rank of the tensor
 
-    cell = tf.nn.rnn_cell.GRUCell(N_HIDDEN_UNITS)
+    # tf.contrib.rnn.GRUBlockCellV2 optimzed for CPU, tf.contrib.cudnn_rnn.CudnnGRU for GPU
+    cell = tf.contrib.rnn.GRUCell(N_HIDDEN_UNITS)
     # cell = tf.contrib.rnn.DropoutWrapper(cell, output_keep_prob=DROPOUT)
 
     # Create an unrolled Recurrent Neural Networks to length of max_sequence_length and passes
@@ -265,9 +274,19 @@ print(
 )
 
 t_pred = time.time()
+
+# switching to CPU to avoid memory issues
+# tf.device("/cpu:0")
+
 print("\n[⚡] Creating recommendations on test set (probs for all N products per sequence)")
 # y_pred_class = np.array([p["class"] for p in model.predict(X_test, as_iterable=True)])
-y_pred_probs = np.array([p["prob"] for p in model.predict(X_test, as_iterable=True)])
+y_pred_probs = np.array(  # memory efficient generator with batches to avoid memory issues
+    [
+        p["prob"]
+        for p in model.predict(X_test, as_iterable=True, batch_size=1024, iterate_batches=True)
+    ]
+)
+
 pred_time = time.time() - t_pred
 print("     Elapsed time for predicting {} sequences: {:.3} seconds".format(len(y_test), pred_time))
 
@@ -295,10 +314,11 @@ def generate_predicted_sequences(y_pred_probs, output_length=10):
 
 
 # process recomendations
-predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
-predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5 recommendations
-predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 5 recommendations
-y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation
+y_pred_probs = np.vstack(y_pred_probs)  # stack batches to (y_test, N_TOP_PRODUCTS)
+predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)  # top10
+predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5
+predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 3
+y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation (predicted next click)
 
 score = np.round(accuracy_score(y_test, y_pred), 4)
 map3 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_3, k=3), 4)
@@ -307,14 +327,15 @@ map10 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_1
 score = np.round(accuracy_score(y_test, y_pred), 4)
 # cross_entropy = np.round(log_loss(y_test, predicted_sequences_5[:,0]), 4)
 coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
-# recom_novelty = sum([(predicted_sequences[i] not in X_test[i]) for i in range(len(y_test))]) / len(y_test)
+# novelty =
+
 
 print("     Accuracy @ 1: {:.4}%".format(score * 100))
 print("     MAP @ 5: {:.4}%".format(map5 * 100))
 print("     MAP @ 10: {:.4}%".format(map10 * 100))
 # print("     Cross Entropy Loss: {:.4}%".format(cross_entropy))
 print("     Coverage @ 1: {:.4}%".format(coverage * 100))
-# print("     Novelty @ 1: {:.4}% (recom products not in input)".format(recom_novelty * 100))
+# print("     Novelty @ 5: {:.4}% (recom products not in input)".format(novelty * 100))
 
 
 ####################################################################################################
@@ -324,8 +345,14 @@ print("     Coverage @ 1: {:.4}%".format(coverage * 100))
 if not DRY_RUN:
     print("[⚡] Logging experiment to mlflow")
 
+    # check if we are runnnig on GPU (Cloud) or CPU (local)
+    if "GPU" in str(device_lib.list_local_devices()):
+        MACHINE = "cloud"
+    else:
+        MACHINE = "local"
+
     # Set tags
-    mlflow.set_tags({"double_data": DOUBLE_DATA, "tf": tf.__version__})
+    mlflow.set_tags({"machine": MACHINE, "tf": tf.__version__, "double_data": DOUBLE_DATA})
 
     # Log parameters
     mlflow.log_param("n_products", N_TOP_PRODUCTS)
@@ -348,12 +375,12 @@ if not DRY_RUN:
     mlflow.log_metric("MAP 10", map10)
     #    mlflow.log_metric("Cross Entropy", loss)
     mlflow.log_metric("coverage", coverage)
-    #    mlflow.log_metric("novelty", novelty)
+    # mlflow.log_metric("novelty", novelty)
     mlflow.log_metric("Train mins", np.round(train_time / 60), 2)
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log executed code
-    mlflow.log_artifact("gru_tensorflow_embedding.py")
+    mlflow.log_artifact("marnix-single-flow-rnn/gru_tensorflow_embedding.py")
 
     print("[⚡] Elapsed total time: {:.3} minutes".format((time.time() - t_prep) / 60))
 

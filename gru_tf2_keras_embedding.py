@@ -190,21 +190,12 @@ print(
 ####################################################################################################
 # DEFINE AND TRAIN RECURRENT NEURAL NETWORK
 ####################################################################################################
-# https://machinelearnings.co/tensorflow-text-classification-615198df9231
 
 print("\n[⚡] Starting model training & evaluation")
 
 if not DRY_RUN:
     mlflow.start_run()  # start mlflow run for experiment tracking
 t_train = time.time()  # start timer #2
-
-model = tf.keras.Sequential()
-model.add(tf.keras.layers.Embedding(input_dim=N_TOP_PRODUCTS, output_dim=EMBED_DIM))
-model.add(tf.keras.layers.GRUCell(N_HIDDEN_UNITS))
-model.add(tf.keras.layers.Dense(10, activation="softmax"))
-model.summary()
-
-model.fit(X_train, y_train, validation_data=(X_val, y_val), batch_size=BATCH_SIZE, epochs=N_EPOCHS)
 
 
 def embedding_rnn_model(
@@ -234,7 +225,12 @@ model = embedding_rnn_model(
     batch_size=BATCH_SIZE,
 )
 
-model.compile(loss="categorical_crossentropy", optimizer="RMSprop", metrics=["loss", "accuracy"])
+model.compile(
+    loss="categorical_crossentropy",
+    optimizer="RMSprop",
+    metrics=["accuracy", "categorical_crossentropy"],
+)
+
 model.fit(X_train, y_train, validation_data=(X_val, y_val), batch_size=BATCH_SIZE, epochs=N_EPOCHS)
 
 train_time = time.time() - t_train
