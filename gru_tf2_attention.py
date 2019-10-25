@@ -1,47 +1,46 @@
+import os
 import numpy as np
 import pandas as pd
 import time
 import mlflow
 import warnings
 
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
+import tensorflow as tf
+from tensorflow.python.client import device_lib
+
 from ml_metrics import average_precision
-from sklearn.metrics import accuracy_score, log_loss
+from sklearn.metrics import accuracy_score
 
-warnings.simplefilter(action="ignore", category=FutureWarning)
-with warnings.catch_warnings():  # avoid futurewarnings since we a lot of deprecated stuff
-    warnings.filterwarnings("ignore", category=FutureWarning)
-    import tensorflow as tf
-    from tensorflow import keras
-    from tensorflow.python.client import device_lib
-
-tf.enable_eager_execution()
-# tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
 ####################################################################################################
 # EXPERIMENT SETTINGS
 ####################################################################################################
 
 # run mode
-DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
+DRY_RUN = True  # runs flow on small subset of data for speed and disables mlfow tracking
 DOUBLE_DATA = False  # loads two weeks worth of raw data instead of 1 week
 
 # input
-DATA_PATH1 = "./data/ga_product_sequence_20191013.csv"
-DATA_PATH2 = "./data/ga_product_sequence_20191020.csv"
+DATA_PATH1 = "data/ga_product_sequence_20191013.csv"
+DATA_PATH2 = "data/ga_product_sequence_20191020.csv"
 INPUT_VAR = "product_sequence"
 
 # constants
-N_TOP_PRODUCTS = 6000
-EMBED_DIM = 512
-N_HIDDEN_UNITS = 3000
+# top 6000 products is ~70% of views, 8000 is 80%, 10000 is ~84%, 12000 is ~87%, 15000 is ~90%
+N_TOP_PRODUCTS = 1000
+embedding_dim = 512
+units = 1024
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
-N_EPOCHS = 2
+EPOCHS = 1
 LEARNING_RATE = 0.001
-BATCH_SIZE = 256
-MAX_STEPS = 5e3
+BATCH_SIZE = 64
+MAX_STEPS = 5000
 DROPOUT = 1
 OPTIMIZER = "RMSProp"
 CLIP_GRADIENTS = 1.0  # float
@@ -49,14 +48,14 @@ CLIP_GRADIENTS = 1.0  # float
 TRAIN_RATIO = 0.7
 VAL_RATIO = 0.1
 TEST_RATIO = 0.2
+SHUFFLE_TRAIN_SET = True
 
 # debugging constants
 if DRY_RUN:
-    N_TOP_PRODUCTS = 100
+    N_TOP_PRODUCTS = 200
     EMBED_DIM = 32
     N_HIDDEN_UNITS = 64
-    BATCH_SIZE = 16
-    N_EPOCHS = 1
+    BATCH_SIZE = 64
 
 
 ####################################################################################################
@@ -69,7 +68,7 @@ print("\n[⚡] Reading raw input data")
 
 if DRY_RUN:
     sequence_df = pd.read_csv(DATA_PATH1)
-    sequence_df = sequence_df.tail(2500).copy()  # take a small subset of data for debugging
+    sequence_df = sequence_df.tail(10000).copy()  # take a small subset of data for debugging
 elif DOUBLE_DATA:
     sequence_df = pd.read_csv(DATA_PATH1)
     sequence_df2 = pd.read_csv(DATA_PATH2)
@@ -84,22 +83,13 @@ print("     Data contains {} sequences from {} to {}".format(len(sequence_df), M
 
 
 ####################################################################################################
-# PREPARE DATA FOR MODELING
+# PROCESS AND PREPARE DATA
 ####################################################################################################
 
 t_prep = time.time()  # start timer #1
 
 print("\n[⚡] Tokenizing, padding, filtering & splitting sequences")
 print("     Including top {} most popular products".format(N_TOP_PRODUCTS))
-# define tokenizer to encode sequences while including N most popular items (occurence)
-tokenizer = keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
-# encode sequences
-tokenizer.fit_on_texts(sequence_df["product_sequence"])
-sequences = tokenizer.texts_to_sequences(sequence_df["product_sequence"])
-
-# pre-pad sequences with 0's, length is based on longest present sequence
-# this is required to transform the variable length sequences into equal train-test pairs
-padded_sequences = tf.keras.preprocessing.sequence.pad_sequences(sequences, padding="pre")
 
 
 def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
@@ -114,110 +104,336 @@ def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
 
     """
     pre_len = len(array)
-    array = array[array[:, -1] != 0].copy()  # remove all sequences that end in a 0
     valid_sequence_mask = np.sum((array != 0), axis=1) >= min_items  # create mask
     valid_sequences = array[valid_sequence_mask].copy()
     print("     Removed {} invalid sequences".format(pre_len - len(valid_sequences)))
     return valid_sequences
 
 
-padded_sequences = filter_valid_sequences(padded_sequences, min_items=MIN_PRODUCTS)
-
-# split into train/test subsets before reshaping sequence for training/validation
-# since we process some sequences of a single user into multiple train/validation pairs
-# while actual recommendations (testing) should be done per user equal as in practice
-test_index = int(TEST_RATIO * len(padded_sequences))
-padded_sequences_train = padded_sequences[test_index:].copy()
-padded_sequences_test = padded_sequences[:test_index].copy()
-print("     Training & evaluating model on {} sequences".format(len(padded_sequences_train)))
-print("     Testing recommendations on {} sequences".format(len(padded_sequences_test)))
-
-# clean up memory
-del sequence_df, sequences, padded_sequences
+# tokenize, pad and filter sequences
+sequences = sequence_df["product_sequence"]
 
 
-# reshape sequences for model training/validation
-def generate_train_test_pairs(array, input_length=WINDOW_LENGTH, step_size=1):
-    """Reshapes an input matrix with equal length padded sequences into a matrix with desired size.
-    Output shape is based on the input_length. Note that the output width is input_length + 1 since
-    we later take the last column of the matrix to obtain an input matrix of width input_length and
-    a vector with corresponding targets (next item in the sequence).
-    Args:
-        array (array): Input matrix with equal length padded sequences.
-        input_length (int): Size of sliding window, equal to desired length of input sequence.
-        step_size (int): Can be used to skip.
-    Returns:
-        array: Reshaped matrix with # columns equal to input_length + 1 (input + target item).
-    """
-    shape = (array.size - input_length + 2, input_length + 1)
-    strides = array.strides * 2
-    window = np.lib.stride_tricks.as_strided(array, strides=strides, shape=shape)[0::step_size]
-    return window.copy()
+def tokenize(sequences):
+    product_tokenizer = tf.keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
+    product_tokenizer.fit_on_texts(sequences)
+    tensor = product_tokenizer.texts_to_sequences(sequences)
+    tensor = tf.keras.preprocessing.sequence.pad_sequences(tensor, padding="pre")
+    return tensor, product_tokenizer
 
 
-print("[⚡] Reshaping into train-test sequences with fixed window size for training")
-# generate sliding window of sequences with x=4 input products and y=1 target product
-padded_sequences_train = np.apply_along_axis(generate_train_test_pairs, 1, padded_sequences_train)
-padded_sequences_train = np.vstack(padded_sequences_train).copy()  # stack sequences
-print("     Generated {} sequences for training/validation".format(len(padded_sequences_train)))
+sequences, product_mapping = tokenize(sequences)
+sequences = filter_valid_sequences(sequences, min_items=MIN_PRODUCTS)
 
-# filter sequences, note that due to reshaping again invalid sequences can be generated
-padded_sequences_train = filter_valid_sequences(padded_sequences_train, min_items=MIN_PRODUCTS)
+# split sequences into X, y subsets for training/validation/testing
+train_index = int(TRAIN_RATIO * len(sequences))
+val_index = train_index + int(VAL_RATIO * len(sequences))
+X_train, y_train = sequences[:train_index, :-1], sequences[:train_index, -1]
+X_val, y_val = sequences[train_index:val_index, :-1], sequences[train_index:val_index, -1]
+X_test, y_test = sequences[val_index:, :-1], sequences[val_index:, -1]
+max_length_inp, max_length_targ = sequences.shape[1], 1  # for now we predict output sequence of n=1
 
-# split sequences into subsets for training/validation/testing
-# to predict 1 sequence per user in the test set we predict based on the last 4 items
-val_index = int(VAL_RATIO * len(padded_sequences_train))
-X_train, y_train = padded_sequences_train[:-val_index, :-1], padded_sequences_train[:-val_index, -1]
-X_val, y_val = padded_sequences_train[:val_index, :-1], padded_sequences_train[:val_index, -1]
-X_test, y_test = padded_sequences_test[:, -5:-1], padded_sequences_test[:, -1]
 
-print("[⚡] Generated dataset dimensions:")
+print("[⚡] Created dataset dimensions:")
 print("     Training X {}, y {}".format(X_train.shape, y_train.shape))
 print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
 print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
+print("     Max input length {}, output length {}".format(max_length_inp, max_length_targ))
 
-# clean up memory
-del padded_sequences_train, padded_sequences_test
 
+print("\n[⚡] Generating training batches")
+BUFFER_SIZE = len(X_train)
+steps_per_epoch = len(X_train) // BATCH_SIZE
+vocab_inp_size = N_TOP_PRODUCTS + 1
+vocab_tar_size = N_TOP_PRODUCTS + 1
+
+dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(BUFFER_SIZE)
+dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)  # incomplete last batch is dropped
+example_input_batch, example_target_batch = next(iter(dataset))
+
+print("     Batch size: {}".format(BATCH_SIZE))
+print("     Steps per epoch X: {}".format(steps_per_epoch))
 print(
-    "[⚡] Elapsed time for tokenizing, padding, filtering & splitting: {:.3} seconds".format(
-        time.time() - t_prep
+    "     Input batch shape {}, target batch shape {}".format(
+        example_input_batch.shape, example_target_batch.shape
     )
 )
 
+print("[⚡] Elapsed time for preparing data: {:.3} seconds".format(time.time() - t_prep))
+
+# clean up memory
+del sequence_df, sequences
+
 
 ####################################################################################################
-# DEFINE AND TRAIN NEURAL ATTENTION NETWORK
+# DEFINE NEURAL SEQUENCE NETWORK ARCHITECTURE
 ####################################################################################################
 
-# seq2seq with attention
-# https://www.tensorflow.org/tutorials/text/nmt_with_attention
+print("[⚡] Defining Neural Sequence Network with Bahdanau Attention Mechanism")
 
 
-# Transformer model with self-attention
-# Note: If the input does have a temporal/spatial relationship, like text, some positional encoding
-# must be added or the model will effectively see a bag of words.
-# https://www.tensorflow.org/tutorials/text/transformer
+class Encoder(tf.keras.Model):
+    def __init__(self, vocab_size, embedding_dim, enc_units, batch_sz):
+        super(Encoder, self).__init__()
+        self.batch_sz = batch_sz
+        self.enc_units = enc_units
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+        self.gru = tf.keras.layers.GRU(
+            self.enc_units,
+            return_sequences=True,
+            return_state=True,
+            recurrent_initializer="glorot_uniform",
+        )
 
-# Masking
-# Mask all the pad tokens in the batch of sequence. It ensures that the model does not treat
-# padding as the input. The mask indicates where pad value 0 is present: it outputs a 1 at those
-# locations, and a 0 otherwise.
+    def call(self, x, hidden):
+        x = self.embedding(x)
+        output, state = self.gru(x, initial_state=hidden)
+        return output, state
+
+    def initialize_hidden_state(self):
+        return tf.zeros((self.batch_sz, self.enc_units))
 
 
-def create_padding_mask(seq):
-    seq = tf.cast(tf.math.equal(seq, 0), tf.float32)
+class BahdanauAttention(tf.keras.layers.Layer):
+    def __init__(self, units):
+        super(BahdanauAttention, self).__init__()
+        self.W1 = tf.keras.layers.Dense(units)
+        self.W2 = tf.keras.layers.Dense(units)
+        self.V = tf.keras.layers.Dense(1)
 
-    # add extra dimensions to add the padding
-    # to the attention logits.
-    return seq[:, tf.newaxis, tf.newaxis, :]  # (batch_size, 1, 1, seq_len)
+    def call(self, query, values):
+        # hidden shape == (batch_size, hidden size)
+        # hidden_with_time_axis shape == (batch_size, 1, hidden size)
+        # we are doing this to perform addition to calculate the score
+        hidden_with_time_axis = tf.expand_dims(query, 1)
 
+        # score shape == (batch_size, max_length, 1)
+        # we get 1 at the last axis because we are applying score to self.V
+        # the shape of the tensor before applying self.V is (batch_size, max_length, units)
+        score = self.V(tf.nn.tanh(self.W1(values) + self.W2(hidden_with_time_axis)))
+
+        # attention_weights shape == (batch_size, max_length, 1)
+        attention_weights = tf.nn.softmax(score, axis=1)
+
+        # context_vector shape after sum == (batch_size, hidden_size)
+        context_vector = attention_weights * values
+        context_vector = tf.reduce_sum(context_vector, axis=1)
+
+        return context_vector, attention_weights
+
+
+class Decoder(tf.keras.Model):
+    def __init__(self, vocab_size, embedding_dim, dec_units, batch_sz):
+        super(Decoder, self).__init__()
+        self.batch_sz = batch_sz
+        self.dec_units = dec_units
+        self.embedding = tf.keras.layers.Embedding(vocab_size, embedding_dim)
+        self.gru = tf.keras.layers.GRU(
+            self.dec_units,
+            return_sequences=True,
+            return_state=True,
+            recurrent_initializer="glorot_uniform",
+        )
+        self.fc = tf.keras.layers.Dense(vocab_size)
+
+        # used for attention
+        self.attention = BahdanauAttention(self.dec_units)
+
+    def call(self, x, hidden, enc_output):
+        # enc_output shape == (batch_size, max_length, hidden_size)
+        context_vector, attention_weights = self.attention(hidden, enc_output)
+
+        # x shape after passing through embedding == (batch_size, 1, embedding_dim)
+        x = self.embedding(x)
+
+        # x shape after concatenation == (batch_size, 1, embedding_dim + hidden_size)
+        x = tf.concat([tf.expand_dims(context_vector, 1), x], axis=-1)
+
+        # passing the concatenated vector to the GRU
+        output, state = self.gru(x)
+
+        # output shape == (batch_size * 1, hidden_size)
+        output = tf.reshape(output, (-1, output.shape[2]))
+
+        # output shape == (batch_size, vocab)
+        x = self.fc(output)
+
+        return x, state, attention_weights
+
+
+####################################################################################################
+# DEFINE OPTIMIZATION, LOSS, TRAINING & EVALUATION
+####################################################################################################
+
+# optimizer
+optimizer = tf.keras.optimizers.Adam()
+loss_object = tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True, reduction="none")
+
+
+# loss function
+def loss_function(real, pred):
+    mask = tf.math.logical_not(tf.math.equal(real, 0))
+    loss_ = loss_object(real, pred)
+
+    mask = tf.cast(mask, dtype=loss_.dtype)
+    loss_ *= mask
+
+    return tf.reduce_mean(loss_)
+
+
+@tf.function
+def train_step(inp, targ, enc_hidden):
+    loss = 0
+
+    with tf.GradientTape() as tape:
+        enc_output, enc_hidden = encoder(inp, enc_hidden)
+
+        dec_hidden = enc_hidden
+
+        dec_input = tf.expand_dims([targ_lang.word_index["<start>"]] * BATCH_SIZE, 1)
+
+        # Teacher forcing - feeding the target as the next input
+        for t in range(1, targ.shape[1]):
+            # passing enc_output to the decoder
+            predictions, dec_hidden, _ = decoder(dec_input, dec_hidden, enc_output)
+
+            loss += loss_function(targ[:, t], predictions)
+
+            # using teacher forcing
+            dec_input = tf.expand_dims(targ[:, t], 1)
+
+    batch_loss = loss / int(targ.shape[1])
+
+    variables = encoder.trainable_variables + decoder.trainable_variables
+
+    gradients = tape.gradient(loss, variables)
+
+    optimizer.apply_gradients(zip(gradients, variables))
+
+    return batch_loss
+
+
+def evaluate(sentence):
+    attention_plot = np.zeros((max_length_targ, max_length_inp))
+
+    # sentence = preprocess_sentence(sentence)
+
+    inputs = [inp_lang.word_index[i] for i in sentence.split(" ")]
+    inputs = tf.keras.preprocessing.sequence.pad_sequences(
+        [inputs], maxlen=max_length_inp, padding="post"
+    )
+    inputs = tf.convert_to_tensor(inputs)
+
+    result = ""
+
+    hidden = [tf.zeros((1, units))]
+    enc_out, enc_hidden = encoder(inputs, hidden)
+
+    dec_hidden = enc_hidden
+    dec_input = tf.expand_dims([targ_lang.word_index["<start>"]], 0)
+
+    for t in range(max_length_targ):
+        predictions, dec_hidden, attention_weights = decoder(dec_input, dec_hidden, enc_out)
+
+        # storing the attention weights to plot later on
+        attention_weights = tf.reshape(attention_weights, (-1,))
+        attention_plot[t] = attention_weights.numpy()
+
+        predicted_id = tf.argmax(predictions[0]).numpy()
+
+        result += targ_lang.index_word[predicted_id] + " "
+
+        if targ_lang.index_word[predicted_id] == "<end>":
+            return result, sentence, attention_plot
+
+        # the predicted ID is fed back into the model
+        dec_input = tf.expand_dims([predicted_id], 0)
+
+    return result, sentence, attention_plot
+
+
+# function for plotting the attention weights
+def plot_attention(attention, sentence, predicted_sentence):
+    fig = plt.figure(figsize=(10, 10))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.matshow(attention, cmap="viridis")
+
+    fontdict = {"fontsize": 14}
+
+    ax.set_xticklabels([""] + sentence, fontdict=fontdict, rotation=90)
+    ax.set_yticklabels([""] + predicted_sentence, fontdict=fontdict)
+
+    ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+    ax.yaxis.set_major_locator(ticker.MultipleLocator(1))
+
+    plt.show()
+
+
+def translate(sentence):
+    result, sentence, attention_plot = evaluate(sentence)
+
+    print("Input: %s" % (sentence))
+    print("Predicted translation: {}".format(result))
+
+    attention_plot = attention_plot[: len(result.split(" ")), : len(sentence.split(" "))]
+    plot_attention(attention_plot, sentence.split(" "), result.split(" "))
+
+
+####################################################################################################
+# CREATE NEURAL SEQUENCE NETWORK AND PRINT SUMMARY
+####################################################################################################
+
+# encoder
+encoder = Encoder(vocab_inp_size, embedding_dim, units, BATCH_SIZE)
+sample_hidden = encoder.initialize_hidden_state()
+sample_output, sample_hidden = encoder(example_input_batch, sample_hidden)
+print("     Encoder output shape: (batch size, seq length, units) {}".format(sample_output.shape))
+print("     Encoder Hidden state shape: (batch size, units) {}".format(sample_hidden.shape))
+
+# attention layer
+attention_layer = BahdanauAttention(10)
+attention_result, attention_weights = attention_layer(sample_hidden, sample_output)
+print("Attention result shape: (batch size, units) {}".format(attention_result.shape))
+print("Attention weights shape: (batch_size, seq length, 1) {}".format(attention_weights.shape))
+
+# decoder
+decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE)
+sample_decoder_output, _, _ = decoder(tf.random.uniform((64, 1)), sample_hidden, sample_output)
+print("Decoder output shape: (batch_size, vocab size) {}".format(sample_decoder_output.shape))
+
+
+####################################################################################################
+# TRAIN & EVALUATE
+####################################################################################################
 
 print("\n[⚡] Starting model training & evaluation")
 
 if not DRY_RUN:
     mlflow.start_run()  # start mlflow run for experiment tracking
+    checkpoint_dir = "./checkpoints"  # training checkpoints (Object-based saving)
+    checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+    checkpoint = tf.train.Checkpoint(optimizer=optimizer, encoder=encoder, decoder=decoder)
+
 t_train = time.time()  # start timer #2
+
+for epoch in range(EPOCHS):
+    start = time.time()
+
+    enc_hidden = encoder.initialize_hidden_state()
+    total_loss = 0
+
+    for (batch, (inp, targ)) in enumerate(dataset.take(steps_per_epoch)):
+        batch_loss = train_step(inp, targ, enc_hidden)
+        total_loss += batch_loss
+
+        if batch % 100 == 0:
+            print("Epoch {} Batch {} Loss {:.4f}".format(epoch + 1, batch, batch_loss.numpy()))
+    # saving (checkpoint) the model every 2 epochs
+    if (epoch + 1) % 2 == 0:
+        checkpoint.save(file_prefix=checkpoint_prefix)
+
+    print("Epoch {} Loss {:.4f}".format(epoch + 1, total_loss / steps_per_epoch))
+    print("Time taken for 1 epoch {} sec\n".format(time.time() - start))
 
 
 train_time = time.time() - t_train
@@ -226,58 +442,6 @@ print(
         len(y_train), train_time / 60
     )
 )
-
-t_pred = time.time()
-print("\n[⚡] Creating recommendations on test set (logits for all N products / sequence)")
-# y_pred_class = np.array([p["class"] for p in model.predict(X_test, as_iterable=True)])
-y_pred_probs = np.array([p["prob"] for p in model.predict(X_test, as_iterable=True)])
-pred_time = time.time() - t_pred
-print("     Elapsed time for predicting {} sequences: {:.3} seconds".format(len(y_test), pred_time))
-
-
-print("[⚡] Computing metrics on test set containing {} sequences".format(len(y_test)))
-
-
-def generate_predicted_sequences(y_pred_probs, output_length=10):
-    """Function to extract predicted output sequences. Output is based on the predicted logit values
-    where the highest probability corresponds to the first recommended item and so forth.
-    Output positions are based on probability from high to low so the output sequence is ordered.
-    To be used for obtaining multiple product recommendations and calculating MAP@K values.
-    Args:
-        y_pred_probs (array): Description of parameter `y_pred_probs`.
-        output_length (int): Description of parameter `output_length`.
-    Returns:
-        array: Description of returned object.
-    """
-    # obtain indices of highest logit values, the position corresponds to the encoded item
-    ind_of_max_logits = np.argpartition(y_pred_probs, -output_length)[-output_length:]
-    # order the sequence, sorting the negative values ascending equals sorting descending
-    ordered_predicted_sequences = ind_of_max_logits[np.argsort(-y_pred_probs[ind_of_max_logits])]
-
-    return ordered_predicted_sequences.copy()
-
-
-# process recomendations
-predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
-predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5 recommendations
-predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 5 recommendations
-y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation
-
-score = np.round(accuracy_score(y_test, y_pred), 4)
-map3 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_3, k=3), 4)
-map5 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_5, k=5), 4)
-map10 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_10, k=10), 4)
-score = np.round(accuracy_score(y_test, y_pred), 4)
-# cross_entropy = np.round(log_loss(y_test, predicted_sequences_5[:,0]), 4)
-coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
-# recom_novelty = sum([(predicted_sequences[i] not in X_test[i]) for i in range(len(y_test))]) / len(y_test)
-
-print("     Accuracy @ 1: {:.4}%".format(score * 100))
-print("     MAP @ 5: {:.4}%".format(map5 * 100))
-print("     MAP @ 10: {:.4}%".format(map10 * 100))
-# print("     Cross Entropy Loss: {:.4}%".format(cross_entropy))
-print("     Coverage @ 1: {:.4}%".format(coverage * 100))
-# print("     Novelty @ 1: {:.4}% (recom products not in input)".format(recom_novelty * 100))
 
 
 ####################################################################################################
@@ -317,12 +481,12 @@ if not DRY_RUN:
     mlflow.log_metric("MAP 10", map10)
     #    mlflow.log_metric("Cross Entropy", loss)
     mlflow.log_metric("coverage", coverage)
-    #    mlflow.log_metric("novelty", novelty)
+    # mlflow.log_metric("novelty", novelty)
     mlflow.log_metric("Train mins", np.round(train_time / 60), 2)
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log executed code
-    mlflow.log_artifact("gru_tf2_keras_embedding.py")
+    mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_attention.py")
 
     print("[⚡] Elapsed total time: {:.3} minutes".format((time.time() - t_prep) / 60))
 

@@ -48,7 +48,7 @@ function start_cluster() {
 
 function remove_known_hosts() {
   # Remove known hosts file to avoid authentication issues on new VM
-  rm ~/.ssh/known_hosts
+  rm -f ~/.ssh/known_hosts
 }
 
 
@@ -57,7 +57,7 @@ function main() {
   clear_bucket
   upload_to_bucket
   start_cluster
-  # remove_known_hosts
+  remove_known_hosts
 }
 
 main

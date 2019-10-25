@@ -26,7 +26,7 @@ tf.enable_eager_execution()
 
 # run mode
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
-DOUBLE_DATA = False  # loads two weeks worth of raw data instead of 1 week
+DOUBLE_DATA = True  # loads two weeks worth of raw data instead of 1 week
 
 # input
 DATA_PATH1 = "marnix-single-flow-rnn/data/ga_product_sequence_20191013.csv"
@@ -36,22 +36,22 @@ INPUT_VAR = "product_sequence"
 # constants
 # top 6000 products is ~70% of views, 8000 is 80%, 10000 is ~84%, 12000 is ~87%, 15000 is ~90%
 N_TOP_PRODUCTS = 10000
-EMBED_DIM = 2048
-N_HIDDEN_UNITS = 4096
+EMBED_DIM = 4096
+N_HIDDEN_UNITS = 2048
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
 LEARNING_RATE = 0.001
-BATCH_SIZE = 512
+BATCH_SIZE = 256
 MAX_STEPS = 5000
 DROPOUT = 1
 OPTIMIZER = "RMSProp"
 CLIP_GRADIENTS = 1.0  # float
 
-TRAIN_RATIO = 0.799
-VAL_RATIO = 0.001
-TEST_RATIO = 0.20
+TRAIN_RATIO = 0.75
+# VAL_RATIO = 0.1
+TEST_RATIO = 0.25
 SHUFFLE_TRAIN_SET = True
 
 # debugging constants
@@ -174,14 +174,18 @@ if SHUFFLE_TRAIN_SET:
 
 # split sequences into subsets for training/validation/testing
 # to predict 1 sequence per user in the test set we predict based on the last 4 items
-val_index = int(VAL_RATIO * len(padded_sequences_train))
-X_train, y_train = padded_sequences_train[:-val_index, :-1], padded_sequences_train[:-val_index, -1]
-X_val, y_val = padded_sequences_train[:val_index, :-1], padded_sequences_train[:val_index, -1]
+# val_index = int(VAL_RATIO * len(padded_sequences_train))
+# X_train, y_train = padded_sequences_train[:-val_index, :-1], padded_sequences_train[:-val_index, -1]
+# X_val, y_val = padded_sequences_train[:val_index, :-1], padded_sequences_train[:val_index, -1]
+# X_test, y_test = padded_sequences_test[:, -5:-1], padded_sequences_test[:, -1]
+
+# only train-test split for now (no validation)
+X_train, y_train = padded_sequences_train[:, :-1], padded_sequences_train[:, -1]
 X_test, y_test = padded_sequences_test[:, -5:-1], padded_sequences_test[:, -1]
 
 print("[⚡] Generated dataset dimensions:")
 print("     Training X {}, y {}".format(X_train.shape, y_train.shape))
-print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
+# print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
 print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
 
 # clean up memory
