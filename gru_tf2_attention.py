@@ -37,7 +37,7 @@ WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for tr
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
-EPOCHS = 1
+EPOCHS = 3
 LEARNING_RATE = 0.001
 BATCH_SIZE = 64
 MAX_STEPS = 5000
@@ -52,9 +52,9 @@ SHUFFLE_TRAIN_SET = True
 
 # debugging constants
 if DRY_RUN:
-    N_TOP_PRODUCTS = 200
-    EMBED_DIM = 32
-    N_HIDDEN_UNITS = 64
+    N_TOP_PRODUCTS = 500
+    EMBED_DIM = 256
+    N_HIDDEN_UNITS = 1024
     BATCH_SIZE = 64
 
 
@@ -68,7 +68,7 @@ print("\n[⚡] Reading raw input data")
 
 if DRY_RUN:
     sequence_df = pd.read_csv(DATA_PATH1)
-    sequence_df = sequence_df.tail(10000).copy()  # take a small subset of data for debugging
+    sequence_df = sequence_df.tail(250000).copy()  # take a small subset of data for debugging
 elif DOUBLE_DATA:
     sequence_df = pd.read_csv(DATA_PATH1)
     sequence_df2 = pd.read_csv(DATA_PATH2)
@@ -92,6 +92,10 @@ print("\n[⚡] Tokenizing, padding, filtering & splitting sequences")
 print("     Including top {} most popular products".format(N_TOP_PRODUCTS))
 
 
+def add_start_end_tokens(sequences):
+    return "start," + sequences + ",end"
+
+
 def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
     """Short summary.
 
@@ -104,14 +108,18 @@ def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
 
     """
     pre_len = len(array)
-    valid_sequence_mask = np.sum((array != 0), axis=1) >= min_items  # create mask
+    valid_sequence_mask = (
+        np.sum((array != 0), axis=1) >= min_items + 2
+    )  # create mask (+2 for start/end tokens)
     valid_sequences = array[valid_sequence_mask].copy()
     print("     Removed {} invalid sequences".format(pre_len - len(valid_sequences)))
     return valid_sequences
 
 
 # tokenize, pad and filter sequences
+sequence_df["product_sequence"] = sequence_df["product_sequence"].apply(add_start_end_tokens)
 sequences = sequence_df["product_sequence"]
+sequences
 
 
 def tokenize(sequences):
@@ -122,23 +130,21 @@ def tokenize(sequences):
     return tensor, product_tokenizer
 
 
-sequences, product_mapping = tokenize(sequences)
+sequences, tokenizer = tokenize(sequences)
 sequences = filter_valid_sequences(sequences, min_items=MIN_PRODUCTS)
+
+
+# add start/end tokens to input-target sequences
+sequences = np.insert(sequences, -2, 2, axis=1)  # add end after input sequences
+sequences = np.insert(sequences, -2, 1, axis=1)  # add start before target products
 
 # split sequences into X, y subsets for training/validation/testing
 train_index = int(TRAIN_RATIO * len(sequences))
 val_index = train_index + int(VAL_RATIO * len(sequences))
-X_train, y_train = sequences[:train_index, :-1], sequences[:train_index, -1]
-X_val, y_val = sequences[train_index:val_index, :-1], sequences[train_index:val_index, -1]
-X_test, y_test = sequences[val_index:, :-1], sequences[val_index:, -1]
+X_train, y_train = sequences[:train_index, :-3], sequences[:train_index, -3:]
+X_val, y_val = (sequences[train_index:val_index, :-3], sequences[train_index:val_index, -3:])
+X_test, y_test = sequences[val_index:, :-3], sequences[val_index:, -3:]
 max_length_inp, max_length_targ = sequences.shape[1], 1  # for now we predict output sequence of n=1
-
-
-print("[⚡] Created dataset dimensions:")
-print("     Training X {}, y {}".format(X_train.shape, y_train.shape))
-print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
-print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
-print("     Max input length {}, output length {}".format(max_length_inp, max_length_targ))
 
 
 print("\n[⚡] Generating training batches")
@@ -151,13 +157,29 @@ dataset = tf.data.Dataset.from_tensor_slices((X_train, y_train)).shuffle(BUFFER_
 dataset = dataset.batch(BATCH_SIZE, drop_remainder=True)  # incomplete last batch is dropped
 example_input_batch, example_target_batch = next(iter(dataset))
 
-print("     Batch size: {}".format(BATCH_SIZE))
-print("     Steps per epoch X: {}".format(steps_per_epoch))
-print(
-    "     Input batch shape {}, target batch shape {}".format(
-        example_input_batch.shape, example_target_batch.shape
-    )
-)
+
+# Function takes a tokenized sentence and map back to the product_ids
+def sequence_to_id(tokens):
+    # Looking up words in dictionary
+    words = [tokenizer.index_word.get(token) for token in tokens]
+    return words
+
+
+# map tokens back to product_ids
+X_train, y_train = list(map(sequence_to_id, X_train)), list(map(sequence_to_id, y_train))
+X_val, y_val = list(map(sequence_to_id, X_val)), list(map(sequence_to_id, y_val))
+X_test, y_test = list(map(sequence_to_id, X_test)), list(map(sequence_to_id, y_test))
+
+X_train, y_train = np.array(X_train), np.array(y_train)
+X_val, y_val = np.array(X_val), np.array(y_val)
+X_test, y_test = np.array(X_test), np.array(y_test)
+
+print("[⚡] Created datasets:")
+print("     Training X {}, y {}".format(X_train.shape, y_train.shape))
+print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
+print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
+print("     Max input length {}, output length {}".format(max_length_inp, max_length_targ))
+
 
 print("[⚡] Elapsed time for preparing data: {:.3} seconds".format(time.time() - t_prep))
 
@@ -169,7 +191,7 @@ del sequence_df, sequences
 # DEFINE NEURAL SEQUENCE NETWORK ARCHITECTURE
 ####################################################################################################
 
-print("[⚡] Defining Neural Sequence Network with Bahdanau Attention Mechanism")
+print("\n[⚡] Defining Neural Sequence Network with Bahdanau Attention Mechanism")
 
 
 class Encoder(tf.keras.Model):
@@ -290,7 +312,7 @@ def train_step(inp, targ, enc_hidden):
 
         dec_hidden = enc_hidden
 
-        dec_input = tf.expand_dims([targ_lang.word_index["<start>"]] * BATCH_SIZE, 1)
+        dec_input = tf.expand_dims([tokenizer.word_index["start"]] * BATCH_SIZE, 1)
 
         # Teacher forcing - feeding the target as the next input
         for t in range(1, targ.shape[1]):
@@ -318,7 +340,7 @@ def evaluate(sentence):
 
     # sentence = preprocess_sentence(sentence)
 
-    inputs = [inp_lang.word_index[i] for i in sentence.split(" ")]
+    inputs = [tokenizer.word_index[i] for i in sentence.split(" ")]
     inputs = tf.keras.preprocessing.sequence.pad_sequences(
         [inputs], maxlen=max_length_inp, padding="post"
     )
@@ -330,7 +352,7 @@ def evaluate(sentence):
     enc_out, enc_hidden = encoder(inputs, hidden)
 
     dec_hidden = enc_hidden
-    dec_input = tf.expand_dims([targ_lang.word_index["<start>"]], 0)
+    dec_input = tf.expand_dims([tokenizer.word_index["start"]], 0)
 
     for t in range(max_length_targ):
         predictions, dec_hidden, attention_weights = decoder(dec_input, dec_hidden, enc_out)
@@ -341,9 +363,9 @@ def evaluate(sentence):
 
         predicted_id = tf.argmax(predictions[0]).numpy()
 
-        result += targ_lang.index_word[predicted_id] + " "
+        result += tokenizer.index_word[predicted_id] + " "
 
-        if targ_lang.index_word[predicted_id] == "<end>":
+        if tokenizer.index_word[predicted_id] == "end":
             return result, sentence, attention_plot
 
         # the predicted ID is fed back into the model
@@ -393,13 +415,15 @@ print("     Encoder Hidden state shape: (batch size, units) {}".format(sample_hi
 # attention layer
 attention_layer = BahdanauAttention(10)
 attention_result, attention_weights = attention_layer(sample_hidden, sample_output)
-print("Attention result shape: (batch size, units) {}".format(attention_result.shape))
-print("Attention weights shape: (batch_size, seq length, 1) {}".format(attention_weights.shape))
+print("     Attention result shape: (batch size, units) {}".format(attention_result.shape))
+print(
+    "     Attention weights shape: (batch_size, seq length, 1) {}".format(attention_weights.shape)
+)
 
 # decoder
 decoder = Decoder(vocab_tar_size, embedding_dim, units, BATCH_SIZE)
 sample_decoder_output, _, _ = decoder(tf.random.uniform((64, 1)), sample_hidden, sample_output)
-print("Decoder output shape: (batch_size, vocab size) {}".format(sample_decoder_output.shape))
+print("     Decoder output shape: (batch_size, vocab size) {}".format(sample_decoder_output.shape))
 
 
 ####################################################################################################
@@ -407,6 +431,13 @@ print("Decoder output shape: (batch_size, vocab size) {}".format(sample_decoder_
 ####################################################################################################
 
 print("\n[⚡] Starting model training & evaluation")
+
+print(
+    "     Training for {} epochs with {} batches of {} samples per epoch".format(
+        EPOCHS, BATCH_SIZE, steps_per_epoch
+    )
+)
+
 
 if not DRY_RUN:
     mlflow.start_run()  # start mlflow run for experiment tracking
@@ -427,13 +458,13 @@ for epoch in range(EPOCHS):
         total_loss += batch_loss
 
         if batch % 100 == 0:
-            print("Epoch {} Batch {} Loss {:.4f}".format(epoch + 1, batch, batch_loss.numpy()))
+            print("     Epoch {} Batch {} Loss {:.4f}".format(epoch + 1, batch, batch_loss.numpy()))
     # saving (checkpoint) the model every 2 epochs
-    if (epoch + 1) % 2 == 0:
+    if not DRY_RUN and (epoch + 1) % 2 == 0:
         checkpoint.save(file_prefix=checkpoint_prefix)
 
-    print("Epoch {} Loss {:.4f}".format(epoch + 1, total_loss / steps_per_epoch))
-    print("Time taken for 1 epoch {} sec\n".format(time.time() - start))
+    print("     Epoch {} Loss {:.4f}".format(epoch + 1, total_loss / steps_per_epoch))
+    print("     Time taken for 1 epoch {} sec\n".format(time.time() - start))
 
 
 train_time = time.time() - t_train
@@ -443,6 +474,19 @@ print(
     )
 )
 
+####################################################################################################
+# EVALUATION
+####################################################################################################
+
+X_val[25]
+
+
+sentence = "start 819345 819957 819345 819345 819345 end"
+
+translate(sentence)
+
+
+y_val[2]
 
 ####################################################################################################
 # EXPERIMENT TRACKING WITH MLFLOW
@@ -491,3 +535,36 @@ if not DRY_RUN:
     print("[⚡] Elapsed total time: {:.3} minutes".format((time.time() - t_prep) / 60))
 
     mlflow.end_run()
+
+
+###########
+
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Input, GRU, Dense
+
+
+latent_dim = 512
+num_encoder_tokens = 5
+num_decoder_tokens = 5
+
+encoder_inputs = Input(shape=(None, num_encoder_tokens))
+encoder = GRU(latent_dim, return_state=True)
+encoder_outputs, state_h = encoder(encoder_inputs)
+
+decoder_inputs = Input(shape=(None, num_decoder_tokens))
+decoder_gru = GRU(latent_dim, return_sequences=True)
+decoder_outputs = decoder_gru(decoder_inputs, initial_state=state_h)
+decoder_dense = Dense(num_decoder_tokens, activation="softmax")
+decoder_outputs = decoder_dense(decoder_outputs)
+model = Model([encoder_inputs, decoder_inputs], decoder_outputs)
+
+model.summary()
+
+model.compile(optimizer="rmsprop", loss="categorical_crossentropy")
+model.fit(
+    [encoder_input_data, decoder_input_data],
+    decoder_target_data,
+    batch_size=batch_size,
+    epochs=epochs,
+    validation_split=0.2,
+)

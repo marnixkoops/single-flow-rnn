@@ -25,7 +25,7 @@ tf.enable_eager_execution()
 ####################################################################################################
 
 # run mode
-DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
+DRY_RUN = True  # runs flow on small subset of data for speed and disables mlfow tracking
 DOUBLE_DATA = True  # loads two weeks worth of raw data instead of 1 week
 
 # input
@@ -36,22 +36,22 @@ INPUT_VAR = "product_sequence"
 # constants
 # top 6000 products is ~70% of views, 8000 is 80%, 10000 is ~84%, 12000 is ~87%, 15000 is ~90%
 N_TOP_PRODUCTS = 10000
-EMBED_DIM = 4096
-N_HIDDEN_UNITS = 2048
+EMBED_DIM = 2048
+N_HIDDEN_UNITS = 4096
 WINDOW_LENGTH = 4  # fixed window size to generare train/validation pairs for training
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 DTYPE_GRU = tf.float32
 
 LEARNING_RATE = 0.001
+EPOCHS = 3
 BATCH_SIZE = 256
-MAX_STEPS = 5000
 DROPOUT = 1
 OPTIMIZER = "RMSProp"
 CLIP_GRADIENTS = 1.0  # float
 
-TRAIN_RATIO = 0.75
+TRAIN_RATIO = 0.85
 # VAL_RATIO = 0.1
-TEST_RATIO = 0.25
+TEST_RATIO = 0.15
 SHUFFLE_TRAIN_SET = True
 
 # debugging constants
@@ -204,11 +204,16 @@ print(
 # https://machinelearnings.co/tensorflow-text-classification-615198df9231
 
 print("\n[⚡] Starting model training & evaluation")
+steps_per_epoch = len(X_train) // BATCH_SIZE
+steps = EPOCHS * steps_per_epoch
+print("     Training for {} Epochs ({} steps with batch size {})".format(EPOCHS, steps, BATCH_SIZE))
 
 if not DRY_RUN:
     mlflow.start_run()  # start mlflow run for experiment tracking
 
 t_train = time.time()  # start timer #2
+
+# CONSIDER HASHING INSTEAD OF EMBEDDINGS
 
 
 def embedding_rnn_model(
@@ -268,7 +273,7 @@ def embedding_rnn_model(
 
 
 model = tf.contrib.learn.Estimator(model_fn=embedding_rnn_model)
-model.fit(X_train, y_train, max_steps=MAX_STEPS, batch_size=BATCH_SIZE)
+model.fit(X_train, y_train, max_steps=steps, batch_size=BATCH_SIZE)
 
 train_time = time.time() - t_train
 print(
@@ -317,8 +322,22 @@ def generate_predicted_sequences(y_pred_probs, output_length=10):
     return ordered_predicted_sequences.copy()
 
 
-# process recomendations
 y_pred_probs = np.vstack(y_pred_probs)  # stack batches to (y_test, N_TOP_PRODUCTS)
+# y_pred_probs[:2].shape
+# print("     Allocating memory for big prediction matrix")
+# # process recomendations
+# # allocate memory space for big stacked array to avoid memory issues
+# rows = len(y_test)
+# y_pred_container = np.empty((rows, N_TOP_PRODUCTS), dtype=np.float32)
+# y_pred_container_1 = y_pred_container[: rows // 2]
+# y_pred_container_2 = y_pred_container[rows // 2 :]
+# y_pred_container_1[:] = np.vstack(
+#     y_pred_probs[: rows // 2]
+# )  # stack batches to (y_test, N_TOP_PRODUCTS)
+# y_pred_container_2[:] = np.vstack(
+#     y_pred_probs[rows // 2 :]
+# )  # stack batches to (y_test, N_TOP_PRODUCTS)
+
 predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)  # top10
 predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5
 predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 3
@@ -364,7 +383,7 @@ if not DRY_RUN:
     mlflow.log_param("n_hidden_units", N_HIDDEN_UNITS)
     mlflow.log_param("learning_rate", LEARNING_RATE)
     mlflow.log_param("batch_size", BATCH_SIZE)
-    mlflow.log_param("max_steps", MAX_STEPS)
+    mlflow.log_param("epochs", EPOCHS)
     mlflow.log_param("dropout", DROPOUT)
     mlflow.log_param("optimizer", OPTIMIZER)
     mlflow.log_param("clip_gradients", CLIP_GRADIENTS)

@@ -75,7 +75,7 @@ function enable_tensorflow() {
     nvidia-smi
 
     ############[3]## TENSORFLOW SETUP ##############
-    python3 -m pip install tensorflow-gpu==1.14.0
+    python3 -m pip install tensorflow-gpu # ==1.14.0
 
     ## timing logic
     end_time=`date +%s`
@@ -86,7 +86,7 @@ function enable_tensorflow() {
 function install_packages() {
   start_time=`date +%s`
 
-  echo "Installing pip packages"
+  echo "Installing python packages"
   python3 -m pip install jupyter
   python3 -m pip install mlflow
   python3 -m pip install numpy
@@ -94,7 +94,6 @@ function install_packages() {
   python3 -m pip install mlflow
   python3 -m pip install ml_metrics
   python3 -m pip install scikit-learn
-  echo "Finished installing packages"
 
   # Kernel settings to connect remotely
   # jupyter notebook --generate-config
