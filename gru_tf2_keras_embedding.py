@@ -21,49 +21,55 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 # tf.enable_eager_execution()
 # tf.compat.v1.logging.set_verbosity(tf.compat.v1.logging.ERROR)
 
+GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
+print("[⚡] TensorFlow version: {}, GPU available: {}".format(tf.__version__, GPU_AVAILABLE))
+
 ####################################################################################################
-# EXPERIMENT SETTINGS
+# ⚡ EXPERIMENT SETTINGS
 ####################################################################################################
 
 # run mode
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
-DOUBLE_DATA = False  # loads two weeks worth of raw data instead of 1 week
+DOUBLE_DATA = True  # loads two weeks worth of raw data instead of 1 week
+# WEEKS_OF_DATA = 1
 
 # input
-DATA_PATH1 = "./data/ga_product_sequence_20191013.csv"
-DATA_PATH2 = "./data/ga_product_sequence_20191020.csv"
+DATA_PATH1 = "marnix-single-flow-rnn/data/ga_product_sequence_20191013.csv"
+DATA_PATH2 = "marnix-single-flow-rnn/data/ga_product_sequence_20191020.csv"
+# DATA_PATH3 = "marnix-single-flow-rnn/data/ga_product_sequence_20191027.csv"
 INPUT_VAR = "product_sequence"
 
 # constants
-# top 6000 products is ~70% of views, 8000 is 80%, 10000 is ~84%, 12000 is ~87%, 15000 is ~90%
-N_TOP_PRODUCTS = 6000
-EMBED_DIM = 1024
+N_TOP_PRODUCTS = 10000
+EMBED_DIM = 512
 N_HIDDEN_UNITS = 1024
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
 WINDOW_LEN = 4  # fixed window size to generare train/validation pairs for training
 PRED_LOOKBACK = 4  # number of most recent products used per sequence in the test set to predict on
-DTYPE_GRU = tf.float32
+DTYPE = tf.float32
 
-N_EPOCHS = 3
-LEARNING_RATE = 0.001
+OPTIMIZER = "Adam"  # Adam = RMSprop + Momentum, NAdam = Nesterov Adaptive Acceleration + Adam
+MAX_EPOCHS = 12
+LEARNING_RATE = 0.01
 BATCH_SIZE = 128
+DROPOUT = 0.2
+RECURRENT_DROPOUT = 0.1
 
-TRAIN_RATIO = 0.7
+TRAIN_RATIO = 0.70
 VAL_RATIO = 0.1
 TEST_RATIO = 0.2
 SHUFFLE_TRAIN_SET = True
 
 # debugging constants
 if DRY_RUN:
+    SEQUENCES = 100000
     N_TOP_PRODUCTS = 250
-    N_EPOCHS = 6
-    LEARNING_RATE = 0.001
     EMBED_DIM = 32
     N_HIDDEN_UNITS = 128
     BATCH_SIZE = 32
 
 ####################################################################################################
-# READ RAW DATA
+# ⚡ READ RAW DATA
 ####################################################################################################
 
 print("[⚡] Running experiment with DRY_RUN: {} and DOUBLE_DATA: {}".format(DRY_RUN, DOUBLE_DATA))
@@ -72,7 +78,7 @@ print("\n[⚡] Reading raw input data")
 
 if DRY_RUN:
     sequence_df = pd.read_csv(DATA_PATH1)
-    sequence_df = sequence_df.tail(int(100000)).copy()  # take a small subset of data for debugging
+    sequence_df = sequence_df.tail(SEQUENCES).copy()  # take a small subset of data for debugging
 elif DOUBLE_DATA:
     sequence_df = pd.read_csv(DATA_PATH1)
     sequence_df2 = pd.read_csv(DATA_PATH2)
@@ -87,10 +93,10 @@ print("     Data contains {} sequences from {} to {}".format(len(sequence_df), M
 
 
 ####################################################################################################
-# PREPARE DATA FOR MODELING
+# ⚡ PREPARE DATA FOR MODELING
 ####################################################################################################
 
-t_prep = time.time()  # start timer #1
+t_prep = time.time()  # start timer for preparing data
 
 print("\n[⚡] Tokenizing, padding, filtering & splitting sequences")
 print("     Including top {} most popular products".format(N_TOP_PRODUCTS))
@@ -99,7 +105,6 @@ tokenizer = keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
 # encode sequences
 tokenizer.fit_on_texts(sequence_df["product_sequence"])
 sequences = tokenizer.texts_to_sequences(sequence_df["product_sequence"])
-
 
 # pre-pad sequences with 0's, length is based on longest present sequence
 # this is required to transform the variable length sequences into equal train-test pairs
@@ -118,10 +123,13 @@ def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
 
     """
     pre_len = len(array)
-    array = array[array[:, -1] != 0].copy()  # remove all sequences that end in a 0
+    array = array[
+        array[:, -1] != 0
+    ].copy()  # remove all sequences that end in a 0, empty sequences can happen due to top N filter
     valid_sequence_mask = np.sum((array != 0), axis=1) >= min_items  # create mask
     valid_sequences = array[valid_sequence_mask].copy()
     print("     Removed {} invalid sequences".format(pre_len - len(valid_sequences)))
+    print("     Kept {} valid sequences".format(len(valid_sequences)))
     return valid_sequences
 
 
@@ -212,19 +220,24 @@ print(
 
 
 ####################################################################################################
-# DEFINE AND TRAIN RECURRENT NEURAL NETWORK
+# ⚡ DEFINE AND TRAIN RECURRENT NEURAL NETWORK
 ####################################################################################################
 
 if not DRY_RUN:
     mlflow.start_run()  # start mlflow run for experiment tracking
-t_train = time.time()  # start timer #2
+t_train = time.time()  # start timer for training
 
 print("\n[⚡] Training model")
-print("     Training for {} Epochs with batch size {}".format(N_EPOCHS, BATCH_SIZE))
+print("     Training for {} Epochs with batch size {}".format(MAX_EPOCHS, BATCH_SIZE))
 
 
 def embedding_rnn_model(
-    vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, num_units=N_HIDDEN_UNITS, batch_size=BATCH_SIZE
+    vocab_size=N_TOP_PRODUCTS,
+    embed_dim=EMBED_DIM,
+    num_units=N_HIDDEN_UNITS,
+    batch_size=BATCH_SIZE,
+    dropout=DROPOUT,
+    recurrent_dropout=RECURRENT_DROPOUT,
 ):
     model = tf.keras.Sequential(
         [
@@ -233,9 +246,13 @@ def embedding_rnn_model(
             ),
             tf.keras.layers.GRU(
                 N_HIDDEN_UNITS,
+                dropout=DROPOUT,
+                recurrent_dropout=RECURRENT_DROPOUT,
                 return_sequences=False,
                 stateful=True,
                 recurrent_initializer="glorot_uniform",
+                recurrent_activation="sigmoid",  # required for CuDNN GPU support
+                reset_after=True,  # required for CuDNN GPU support
             ),
             tf.keras.layers.Dense(N_TOP_PRODUCTS, activation="sigmoid"),
         ]
@@ -247,18 +264,24 @@ model = embedding_rnn_model(
     vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, num_units=N_HIDDEN_UNITS, batch_size=BATCH_SIZE
 )
 
-# note that OHE targets need categorical_crossentropy
-# since we want encoded targets directly we can use sparse_categorical_crossentropy!
-model.compile(loss="sparse_categorical_crossentropy", optimizer="RMSprop", metrics=["accuracy"])
 
-# model description
-# model.get_config() # detailed parameter settings
+model.compile(loss="sparse_categorical_crossentropy", optimizer=OPTIMIZER, metrics=["accuracy"])
 model.summary()
+# model.get_config() # detailed parameter settings
 
-model_history = model.fit(
-    X_train, y_train, validation_data=(X_val, y_val), batch_size=BATCH_SIZE, epochs=N_EPOCHS
+# early stopping monitor, stops training if no improvement in validation set for 1 epochs
+early_stopping_monitor = tf.keras.callbacks.EarlyStopping(
+    monitor="val_loss", min_delta=0.01, patience=1, verbose=1, restore_best_weights=False
 )
 
+model_history = model.fit(
+    X_train,
+    y_train,
+    validation_data=(X_val, y_val),
+    batch_size=BATCH_SIZE,
+    epochs=MAX_EPOCHS,
+    callbacks=[early_stopping_monitor],
+)
 
 train_time = time.time() - t_train
 print(
@@ -268,7 +291,7 @@ print(
 )
 
 ####################################################################################################
-# EVALUATION
+# ⚡ EVALUATION
 ####################################################################################################
 
 
@@ -305,7 +328,7 @@ def compute_average_novelty(X_test, y_pred):
     return average_novelty
 
 
-t_pred = time.time()
+t_pred = time.time()  # start timer for predictions
 print("\n[⚡] Creating recommendations on test set (logits for all N products / sequence)")
 y_pred_probs = model.predict(X_test)
 # test_scores = model.evaluate(X_test, y_test, verbose=0)
@@ -318,46 +341,44 @@ print("[⚡] Computing metrics on test set containing {} sequences".format(len(y
 # process recomendations, extract top 10 recommendations based on the probabilities
 predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
 predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5 recommendations
-predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 5 recommendations
-
-loss = np.mean(
-    keras.losses.sparse_categorical_crossentropy(y_test, y_pred_probs, from_logits=True).numpy()
-)
-y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation
+predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 3 recommendations
+y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation (predicted next click)
 del y_pred_probs
 
 accuracy = np.round(accuracy_score(y_test, y_pred), 4)
-loss = np.round(loss, 4)
 map3 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_3, k=3), 4)
 map5 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_5, k=5), 4)
 map10 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_10, k=10), 4)
 coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
 novelty = np.round(compute_average_novelty(X_test, predicted_sequences_5), 4)
+total_params = (
+    model.count_params()
+)  # int(np.sum([model.count_params(p) for p in set(model.trainable_weights)]))
 
-print("     Cross Entropy Loss: {:.4}%".format(loss * 100))
 print("     Accuracy @ 1: {:.4}%".format(accuracy * 100))
 print("     MAP @ 5: {:.4}%".format(map5 * 100))
 print("     MAP @ 3: {:.4}%".format(map3 * 100))
 print("     MAP @ 10: {:.4}%".format(map10 * 100))
 print("     Coverage: {:.4}%".format(coverage * 100))
 print("     Novelty: {:.4}% (recom products not in last viewed items)".format(novelty * 100))
+print("     Total Parameters in the Network: {}".format(total_params))
 
-# plot training history results
+# plot model training history results
 hist_dict = model_history.history
 train_loss_values = hist_dict["loss"]
 train_acc_values = hist_dict["accuracy"]
 val_loss_values = hist_dict["val_loss"]
 val_acc_values = hist_dict["val_accuracy"]
-epochs = np.arange(1, N_EPOCHS + 1).astype(int)
+epochs = np.arange(1, len(model_history.history["loss"]) + 1).astype(int)
+
 
 plt.close()
-validation_plots, ax = plt.subplots(2, 1, figsize=(12, 8))
+validation_plots, ax = plt.subplots(2, 1, figsize=(10, 6))
 plt.subplot(211)  # plot loss over epochs
 plt.plot(
     epochs, train_loss_values, "deepskyblue", linestyle="dashed", marker="o", label="Train Loss"
 )
 plt.plot(epochs, val_loss_values, "springgreen", marker="o", label="Val Loss")
-plt.plot(epochs[-1], loss, "#16a085", marker="8", markersize=12, label="Test Loss")
 
 plt.xlabel("Epochs")
 plt.ylabel("Loss")
@@ -373,26 +394,29 @@ plt.plot(epochs[-1], accuracy, "#16a085", marker="8", markersize=12, label="Test
 
 plt.xlabel("Epochs")
 plt.ylabel("Accuracy")
-plt.title("Accuray (k=1) over Epochs".format(model.loss).upper(), size=13, weight="bold")
+plt.title("Accuracy (k=1) over Epochs".format(model.loss).upper(), size=13, weight="bold")
 plt.legend()
 plt.tight_layout()
+plt.savefig("marnix-single-flow-rnn/plots/validation_plots.png")
 
 ####################################################################################################
-# EXPERIMENT TRACKING WITH MLFLOW
+# ⚡ LOG EXPERIMENTS & RESULTS
 ####################################################################################################
 
 if not DRY_RUN:
     print("[⚡] Logging experiment to mlflow")
 
+    # mlflow.set_tracking_uri()
+
     # check if we are runnnig on GPU (Cloud) or CPU (local)
     if "GPU" in str(device_lib.list_local_devices()):
-        MACHINE = "cloud"
+        MACHINE = "cloud GPU"
     else:
-        MACHINE = "local"
+        MACHINE = "local CPU"
 
     # check which model we are using
     # if "keras.engine.sequential.Sequential" in str(model):
-    #     MODEL = "Keras Embedding GRU"
+    #     MODEL = "TF2 Keras GRU"
     # else:
     #     MODEL = "TF1 GRU"
 
@@ -405,13 +429,18 @@ if not DRY_RUN:
     mlflow.log_param("n_hidden_units", N_HIDDEN_UNITS)
     mlflow.log_param("learning_rate", LEARNING_RATE)
     mlflow.log_param("batch_size", BATCH_SIZE)
-    mlflow.log_param("dtype GRU", DTYPE_GRU)
+    mlflow.log_param("dropout", DROPOUT)
+    mlflow.log_param("recurrent_dropout", RECURRENT_DROPOUT)
+    mlflow.log_param("trainable_params", total_params)
+    mlflow.log_param("optimizer", OPTIMIZER)
+    mlflow.log_param("dtype GRU", DTYPE)
     mlflow.log_param("window", WINDOW_LEN)
     mlflow.log_param("pred_lookback", PRED_LOOKBACK)
     mlflow.log_param("min_products", MIN_PRODUCTS)
+    mlflow.log_param("shuffle_training", SHUFFLE_TRAIN_SET)
+    mlflow.log_param("epochs", epochs)
 
     # Log metrics
-    mlflow.log_metric("Cross-Entropy Loss", loss)
     mlflow.log_metric("Accuracy", accuracy)
     mlflow.log_metric("MAP 3", map3)
     mlflow.log_metric("MAP 5", map5)
@@ -422,8 +451,9 @@ if not DRY_RUN:
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log artifacts
-    mlflow.log_artifact("./gru_tf2_keras_embedding.py")  # log executed code
-    mlflow.log_artifact("validation plots", validation_plots)  # log validation plots
+    mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_keras_embedding.py")  # log executed code
+    mlflow.log_artifact("marnix-single-flow-rnn/plots/validation_plots.png")  # log validation plots
+    # mlflow.log_artifact("model_config", str(model.get_config()))
 
     print("[⚡] Elapsed total time: {:.3} minutes".format((time.time() - t_prep) / 60))
 

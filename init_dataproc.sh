@@ -91,9 +91,10 @@ function install_packages() {
   python3 -m pip install mlflow
   python3 -m pip install numpy
   python3 -m pip install pandas
-  python3 -m pip install mlflow
-  python3 -m pip install ml_metrics
   python3 -m pip install scikit-learn
+  python3 -m pip install matplotlib
+  python3 -m pip install seaborn
+  python3 -m pip install ml_metrics
 
   # Kernel settings to connect remotely
   # jupyter notebook --generate-config
