@@ -53,6 +53,16 @@
 
 ## THEORY NOTES
 
+`Why Recommendations?`
+
+https://venturebeat.com/2017/06/14/airbnb-vp-talks-about-ais-profound-impact-on-profits/
+
+`Why NNs for Recommendations?`
+
+* One of the most attractive properties of neural architectures is that they are (1) end-to-end differentiable and (2) provide suitable inductive biases catered to the input data type. As such, if there is an inherent structure that the model can exploit, then deep neural networks ought to be useful. For instance, CNNs and RNNs have long exploited the intrinsic structure in vision (and/or human language). Similarly, the sequential structure of session or click-logs are highly suitable for the inductive biases provided by recurrent/convolutional models.
+* Moreover, deep neural networks are also composite in the sense that multiple neural building blocks can be composed into a single (gigantic) differentiable function and trained end-to-end. key advantage here is when dealing with content-based recommendation. is is inevitable when modeling users/items on the web, where multi-modal data is commonplace. For instance, when dealing with textual data (reviews [202], tweets [44] etc.), image data (social posts, product images), CNNs/RNNs become indispensable neural building blocks. Here, the traditional alternative (designing modality-specific features etc.) becomes significantly less attractive and consequently, the recommender system cannot take advantage of joint (end-to-end) representation learning.
+* All in all, the capabilities of deep learning in this aspect can be regarded as paradigm-shifting and the ability to represent images, text and interactions in a unified joint framework [197] is not possible without these recent advances.
+
 `GRU:`
 
 * Gated Recurrent Unit. GRU (Cho et al.) alternative memory cell design to LSTM. Often reaches equal or better performance while using fewer parameters and being faster to compute. Related to LSTM having 3 gates (input, remember, forget) while GRU combines  remember and forget into a single update gate resulting in only 2 gates.
@@ -75,3 +85,10 @@
 * Each hidden unit in a neural network trained with dropout must learn to work with a randomly chosen sample of other units. This should make each hidden unit more robust and drive it towards creating useful features on its own without relying on other hidden units to correct its mistakes.
 * Regular dropout is applied on input/output samples in a normal network
 * In a RNN we can also have recurrent dropout, in this case the dropout is applied on the recurrent connections in the network.
+
+`Attention`:
+
+* Give machine ability to focus more on certain parts, just like human attention.
+* Attention is one component of a network’s architecture, and is in charge of managing and quantifying the interdependence:
+ * Between the input and output elements (General Attention)
+ * Within the input elements (Self-Attention)
