@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import time
-import datetime
+import datetime, timedelta
 import warnings
 
 import tensorflow as tf
@@ -23,13 +23,15 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 # 🚀 EXPERIMENT SETTINGS
 ####################################################################################################
 
-# run mode
+# run settings
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
-WEEKS_OF_DATA = 2  # load 1,2 or 3 weeks of data (current implementation is 1)
+LOGGING = True  # mlflow experiment logging
+WEEKS_OF_DATA = 3  # load 1,2 or 3 weeks of data (current implementation is 1)
 
-# define where we run and on which device
+# extract where we run and on which device
+# GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
 device_list = str(device_lib.list_local_devices())
-if "Tesla P100" in str(device_lib.list_local_devices()):
+if "Tesla P100" in device_list:
     DEVICE = "Tesla P100 GPU"
     MACHINE = "cloud"
 elif "GPU" in device_list:
@@ -39,7 +41,6 @@ elif "CPU" in device_list:
     DEVICE = "CPU"
     MACHINE = "local"
 
-GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
 print("🧠 Running TensorFlow version {} on {}".format(tf.__version__, DEVICE))
 
 # input
@@ -49,27 +50,27 @@ DATA_PATH3 = "marnix-single-flow-rnn/data/ga_product_sequence_20191027.csv"
 INPUT_VAR = "product_sequence"
 
 # constants
-N_TOP_PRODUCTS = 10000
-EMBED_DIM = 48
+N_TOP_PRODUCTS = 10000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
+EMBED_DIM = 32
 N_HIDDEN_UNITS = 256
 MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
-WINDOW_LEN = 5  # fixed window size to generare train/validation pairs for training
-PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
+WINDOW_LEN = 6  # fixed window size to generare train/validation pairs for training
+PRED_LOOKBACK = 6  # number of most recent products used per sequence in the test set to predict on
 DTYPE = tf.float32
 
-OPTIMIZER = "Adam"  # Adam = RMSprop + Momentum, NAdam = Nesterov Adaptive Acceleration + Adam
+OPTIMIZER = "Nadam"  # Adam = RMSprop + Momentum, NAdam = Nesterov Adaptive Acceleration + Adam
 MAX_EPOCHS = 16
 LEARNING_RATE = 0.1
-BATCH_SIZE = 256
+BATCH_SIZE = 512
 DROPOUT = 0.25
-RECURRENT_DROPOUT = 0.1
+RECURRENT_DROPOUT = 0.25
 
-TRAIN_RATIO = 0.8
+TRAIN_RATIO = 0.75
 VAL_RATIO = 0.1
-TEST_RATIO = 0.1
-SHUFFLE_TRAIN_SET = False
+TEST_RATIO = 0.15
+SHUFFLE_TRAIN_SET = True
 
-# debugging constants
+# dry run constants
 if DRY_RUN:
     SEQUENCES = 100000
     N_TOP_PRODUCTS = 250
@@ -81,7 +82,7 @@ if DRY_RUN:
 # 🚀 INPUT DATA
 ####################################################################################################
 
-print("\n🚀 Starting experiment on {}".format(datetime.datetime.now()))
+print("\n🚀 Starting experiment on {}".format(datetime.datetime.now() + timedelta(hours=1)))
 print("     Using DRY_RUN: {} and {} weeks of data".format(DRY_RUN, WEEKS_OF_DATA))
 
 print("     Reading raw input data")
@@ -219,12 +220,11 @@ print("⏱️ Elapsed time for processing input data: {:.3} seconds".format(time
 # 🚀 DEFINE AND TRAIN RECURRENT NEURAL NETWORK
 ####################################################################################################
 
-if not DRY_RUN:
-    mlflow.start_run()  # start mlflow run for experiment tracking
+if LOGGING and not DRY_RUN:
+    mlflow.start_run(experiment_id=0)  # start mlflow run for experiment tracking
 t_train = time.time()  # start timer for training
 
-print("\n🧠 Training network")
-print("     Training for a maximum of {} Epochs with batch size {}".format(MAX_EPOCHS, BATCH_SIZE))
+print("\n🧠 Defining network")
 
 
 def embedding_GRU_model(
@@ -262,7 +262,8 @@ model = embedding_GRU_model(
 
 # network info
 model.compile(loss="sparse_categorical_crossentropy", optimizer=OPTIMIZER, metrics=["accuracy"])
-model.summary()
+
+print("\n     Network summary: \n{}".format(model.summary()))
 total_params = model.count_params()
 # model.get_config() # detailed parameter settings
 
@@ -271,6 +272,7 @@ early_stopping_monitor = tf.keras.callbacks.EarlyStopping(
     monitor="val_loss", min_delta=0.001, patience=1, verbose=1, restore_best_weights=False
 )
 
+print("     Training for max {} Epochs and batch size {}".format(MAX_EPOCHS, BATCH_SIZE))
 model_history = model.fit(
     X_train,
     y_train,
@@ -404,13 +406,13 @@ plt.savefig("marnix-single-flow-rnn/plots/validation_plots.png")
 # 🚀 LOG EXPERIMENT
 ####################################################################################################
 
-if not DRY_RUN:
+if LOGGING and not DRY_RUN:
     print("\n🧪 Logging experiment to mlflow")
 
     # mlflow.set_tracking_uri()
 
     # Set tags
-    mlflow.set_tags({"tf": tf.__version__, "machine": MACHINE, "weeks_of_data": WEEKS_OF_DATA})
+    mlflow.set_tags({"tf": tf.__version__, "machine": MACHINE})
 
     # Log parameters
     mlflow.log_param("n_products", N_TOP_PRODUCTS)
@@ -429,6 +431,7 @@ if not DRY_RUN:
     mlflow.log_param("shuffle_training", SHUFFLE_TRAIN_SET)
     mlflow.log_param("epochs", epochs[-1])
     mlflow.log_param("test_ratio", TEST_RATIO)
+    mlflow.log_param("weeks_of_data", WEEKS_OF_DATA)
 
     # Log metrics
     mlflow.log_metric("Accuracy", accuracy)
@@ -449,3 +452,6 @@ if not DRY_RUN:
     mlflow.end_run()
 
 print("✅ All done, total elapsed time: {:.3} minutes".format((time.time() - t_prep) / 60))
+
+
+model.get_config()
