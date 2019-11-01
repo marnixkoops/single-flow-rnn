@@ -102,6 +102,9 @@ function install_packages() {
   # echo "c.NotebookApp.port = 8888" >> ~/.jupyter/jupyter_notebook_config.py
   # echo "c.NotebookApp.open_browser = False" >> ~/.jupyter/jupyter_notebook_config.py
 
+  # give rights to edit folders on VM (used for file syncing)
+  sudo chown -R marnix.koops:marnix.koops marnix-single-flow-rnn
+
   ## timing logic
   end_time=`date +%s`
   MESSAGE="prepare_remote_kernel took `expr $end_time - $start_time` s."

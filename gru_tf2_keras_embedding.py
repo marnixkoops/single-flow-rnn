@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 import time
-import datetime, timedelta
+import datetime
 import warnings
 
 import tensorflow as tf
@@ -51,48 +51,47 @@ INPUT_VAR = "product_sequence"
 
 # constants
 N_TOP_PRODUCTS = 10000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
-EMBED_DIM = 32
-N_HIDDEN_UNITS = 256
-MIN_PRODUCTS = 3  # sequences with less are considered invalid and removed
-WINDOW_LEN = 6  # fixed window size to generare train/validation pairs for training
-PRED_LOOKBACK = 6  # number of most recent products used per sequence in the test set to predict on
-DTYPE = tf.float32
+EMBED_DIM = 48
+N_HIDDEN_UNITS = 192
+MIN_PRODUCTS = 3  # sequences with less products are considered invalid and removed
+WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
+PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 
-OPTIMIZER = "Nadam"  # Adam = RMSprop + Momentum, NAdam = Nesterov Adaptive Acceleration + Adam
+OPTIMIZER = "Nadam"  # Adam = RMSprop + Momentum, Nadam = Nesterov Adaptive Acceleration + Adam
 MAX_EPOCHS = 16
 LEARNING_RATE = 0.1
-BATCH_SIZE = 512
+BATCH_SIZE = 1024
 DROPOUT = 0.25
 RECURRENT_DROPOUT = 0.25
 
-TRAIN_RATIO = 0.75
+TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
-TEST_RATIO = 0.15
+TEST_RATIO = 0.1
 SHUFFLE_TRAIN_SET = True
 
 # dry run constants
 if DRY_RUN:
     SEQUENCES = 100000
-    N_TOP_PRODUCTS = 250
-    EMBED_DIM = 32
-    N_HIDDEN_UNITS = 128
-    BATCH_SIZE = 32
+    N_TOP_PRODUCTS = 100
+    EMBED_DIM = 16
+    N_HIDDEN_UNITS = 32
+    BATCH_SIZE = 8
 
 ####################################################################################################
 # 🚀 INPUT DATA
 ####################################################################################################
 
-print("\n🚀 Starting experiment on {}".format(datetime.datetime.now() + timedelta(hours=1)))
+print("\n🚀 Starting experiment on {}".format(datetime.datetime.now() + datetime.timedelta(hours=1)))
 print("     Using DRY_RUN: {} and {} weeks of data".format(DRY_RUN, WEEKS_OF_DATA))
 
 print("     Reading raw input data")
 
 if DRY_RUN:
-    sequence_df = pd.read_csv(DATA_PATH1)
+    sequence_df = pd.read_csv(DATA_PATH3)
     sequence_df = sequence_df.tail(SEQUENCES).copy()  # take a small subset of data for debugging
 elif WEEKS_OF_DATA == 2:
-    sequence_df = pd.read_csv(DATA_PATH1)
-    sequence_df2 = pd.read_csv(DATA_PATH2)
+    sequence_df = pd.read_csv(DATA_PATH2)
+    sequence_df2 = pd.read_csv(DATA_PATH3)
     sequence_df = sequence_df.append(sequence_df2)
 elif WEEKS_OF_DATA == 3:
     sequence_df = pd.read_csv(DATA_PATH1)
@@ -272,7 +271,7 @@ early_stopping_monitor = tf.keras.callbacks.EarlyStopping(
     monitor="val_loss", min_delta=0.001, patience=1, verbose=1, restore_best_weights=False
 )
 
-print("     Training for max {} Epochs and batch size {}".format(MAX_EPOCHS, BATCH_SIZE))
+print("     Training for a maximum of {} Epochs with batch size {}".format(MAX_EPOCHS, BATCH_SIZE))
 model_history = model.fit(
     X_train,
     y_train,
@@ -350,12 +349,13 @@ predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 3 recommendations
 y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation (predicted next click)
 del y_pred_probs
 
-# TODO this ml_metric + vstack shit could be implemented way faster
+# TODO this ml_metric + vstack shit could be implemented faster
 accuracy = np.round(accuracy_score(y_test, y_pred), 4)
-map3 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_3, k=3), 4)
-map5 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_5, k=5), 4)
-map10 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_10, k=10), 4)
-map15 = np.round(average_precision.mapk(np.vstack(y_test), predicted_sequences_10, k=15), 4)
+y_test = np.vstack(y_test)
+map3 = np.round(average_precision.mapk(y_test, predicted_sequences_3, k=3), 4)
+map5 = np.round(average_precision.mapk(y_test, predicted_sequences_5, k=5), 4)
+map10 = np.round(average_precision.mapk(y_test, predicted_sequences_10, k=10), 4)
+map15 = np.round(average_precision.mapk(y_test, predicted_sequences_10, k=15), 4)
 coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
 novelty = np.round(compute_average_novelty(X_test, predicted_sequences_5), 4)
 
@@ -424,7 +424,6 @@ if LOGGING and not DRY_RUN:
     mlflow.log_param("recurrent_dropout", RECURRENT_DROPOUT)
     mlflow.log_param("trainable_params", total_params)
     mlflow.log_param("optimizer", OPTIMIZER)
-    mlflow.log_param("dtype GRU", DTYPE)
     mlflow.log_param("window", WINDOW_LEN)
     mlflow.log_param("pred_lookback", PRED_LOOKBACK)
     mlflow.log_param("min_products", MIN_PRODUCTS)
@@ -447,11 +446,12 @@ if LOGGING and not DRY_RUN:
     # Log artifacts
     mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_keras_embedding.py")  # log executed code
     mlflow.log_artifact("marnix-single-flow-rnn/plots/validation_plots.png")  # log validation plots
-    # mlflow.log_artifact("model_config", str(model.get_config()))
+
+    file = "marnix-single-flow-rnn/model_config.txt"  # log detailed model settings
+    with open(file, "w") as model_config:
+        model_config.write("{}".format(model.get_config()))
+    mlflow.log_artifact("marnix-single-flow-rnn/model_config.txt")
 
     mlflow.end_run()
 
 print("✅ All done, total elapsed time: {:.3} minutes".format((time.time() - t_prep) / 60))
-
-
-model.get_config()
