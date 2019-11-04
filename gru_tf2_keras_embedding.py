@@ -24,9 +24,9 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 ####################################################################################################
 
 # run settings
-DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
-LOGGING = True  # mlflow experiment logging
-WEEKS_OF_DATA = 3  # load 1,2 or 3 weeks of data (current implementation is 1)
+DRY_RUN = True  # runs flow on small subset of data for speed and disables mlfow tracking
+LOGGING = False  # mlflow experiment logging
+WEEKS_OF_DATA = 2  # load 1,2 or 3 weeks of data (current implementation is 1)
 
 # extract where we run and on which device
 # GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
@@ -44,9 +44,9 @@ elif "CPU" in device_list:
 print("🧠 Running TensorFlow version {} on {}".format(tf.__version__, DEVICE))
 
 # input
-DATA_PATH1 = "marnix-single-flow-rnn/data/ga_product_sequence_20191013.csv"
-DATA_PATH2 = "marnix-single-flow-rnn/data/ga_product_sequence_20191020.csv"
-DATA_PATH3 = "marnix-single-flow-rnn/data/ga_product_sequence_20191027.csv"
+DATA_PATH1 = "./data/ga_product_sequence_20191013.csv"
+DATA_PATH2 = "./data/ga_product_sequence_20191020.csv"
+DATA_PATH3 = "./data/ga_product_sequence_20191027.csv"
 INPUT_VAR = "product_sequence"
 
 # constants
@@ -57,12 +57,12 @@ MIN_PRODUCTS = 3  # sequences with less products are considered invalid and remo
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
 PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 
-OPTIMIZER = "Nadam"  # Adam = RMSprop + Momentum, Nadam = Nesterov Adaptive Acceleration + Adam
 MAX_EPOCHS = 16
-LEARNING_RATE = 0.1
 BATCH_SIZE = 1024
 DROPOUT = 0.25
 RECURRENT_DROPOUT = 0.25
+LEARNING_RATE = 0.01
+OPTIMIZER = tf.keras.optimizers.Nadam(learning_rate=LEARNING_RATE)
 
 TRAIN_RATIO = 0.8
 VAL_RATIO = 0.1
@@ -400,7 +400,7 @@ plt.ylabel("Accuracy")
 plt.title("Accuracy (k=1) over Epochs".format(model.loss).upper(), size=13, weight="bold")
 plt.legend()
 plt.tight_layout()
-plt.savefig("marnix-single-flow-rnn/plots/validation_plots.png")
+plt.savefig("./plots/validation_plots.png")
 
 ####################################################################################################
 # 🚀 LOG EXPERIMENT
@@ -444,13 +444,13 @@ if LOGGING and not DRY_RUN:
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log artifacts
-    mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_keras_embedding.py")  # log executed code
-    mlflow.log_artifact("marnix-single-flow-rnn/plots/validation_plots.png")  # log validation plots
+    mlflow.log_artifact("./gru_tf2_keras_embedding.py")  # log executed code
+    mlflow.log_artifact("./plots/validation_plots.png")  # log validation plots
 
-    file = "marnix-single-flow-rnn/model_config.txt"  # log detailed model settings
+    file = "./model_config.txt"  # log detailed model settings
     with open(file, "w") as model_config:
         model_config.write("{}".format(model.get_config()))
-    mlflow.log_artifact("marnix-single-flow-rnn/model_config.txt")
+    mlflow.log_artifact("./model_config.txt")
 
     mlflow.end_run()
 

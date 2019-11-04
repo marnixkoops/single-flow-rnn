@@ -42,6 +42,8 @@
 
 ##### TRAINING
 
+* [ ] Input dimension = VOCAB_SIZE + 1 due to masking zero's?
+* [ ]
 * [ ] Learning rate (not that important when using adaptive optimizers like Adam or Nadam)
 * [ ] Batch size (large batch sizes slow down training)
 * [ ] Dropout (Or recurrent dropout), (having training dropout seems to improve performance for now)

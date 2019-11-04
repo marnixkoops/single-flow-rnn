@@ -28,7 +28,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 PARAM_SEARCH = True
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
 LOGGING = True  # mlflow experiment logging
-WEEKS_OF_DATA = 3  # load 1,2 or 3 weeks of data (current implementation is 1)
+WEEKS_OF_DATA = 2  # load 1,2 or 3 weeks of data (current implementation is 1)
 
 # extract where we run and on which device
 # GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
@@ -59,16 +59,16 @@ MIN_PRODUCTS = 3  # sequences with less products are considered invalid and remo
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
 PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 
-OPTIMIZER = "Nadam"  # Adam = RMSprop + Momentum, Nadam = Nesterov Adaptive Acceleration + Adam
 MAX_EPOCHS = 12
-LEARNING_RATE = 0.1
 BATCH_SIZE = 1024
 DROPOUT = 0.25
 RECURRENT_DROPOUT = 0.25
+LEARNING_RATE = 0.01
+OPTIMIZER = tf.keras.optimizers.Nadam(learning_rate=LEARNING_RATE)
 
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1
-TEST_RATIO = 0.1
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
 SHUFFLE_TRAIN_SET = True
 
 # dry run constants
@@ -80,56 +80,78 @@ if DRY_RUN:
     BATCH_SIZE = 8
 
 # shitty code to run a random hyperparameter search
-param_space = dict(EMBED_DIM=[16, 32, 48, 64],
-                   N_HIDDEN_UNITS=[64, 128, 192, 256, 512, 1024],
-                   MIN_PRODUCTS=[3, 4, 5],
-                   BATCH_SIZE=[128, 256, 512, 1024, 2048, 4096],
-                   DROPOUT=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7],
-                   RECURRENT_DROPOUT=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.7],
-                   WINDOW_LEN=[3, 4, 5, 6, 8, 10, 12],
-                   PRED_LOOKBACK=[1, 2, 3, 4, 5, 6, 8, 10, 12],
-                   LEARNING_RATE=[0.0001, 0.001, 0.01, 0.1],
-                   WEEKS_OF_DATA=[3]
-                   )
-
-# choose random values for hyperparameters from the search space
-EMBED_DIM = np.random.choice(param_space['EMBED_DIM'])
-N_HIDDEN_UNITS = np.random.choice(param_space['N_HIDDEN_UNITS'])
-MIN_PRODUCTS = np.random.choice(param_space['MIN_PRODUCTS'])
-BATCH_SIZE = np.random.choice(param_space['BATCH_SIZE'])
-DROPOUT = np.random.choice(param_space['DROPOUT'])
-RECURRENT_DROPOUT = np.random.choice(param_space['RECURRENT_DROPOUT'])
-WINDOW_LEN = np.random.choice(param_space['WINDOW_LEN'])
-PRED_LOOKBACK = np.random.choice(param_space['PRED_LOOKBACK'])
-LEARNING_RATE = np.random.choice(param_space['LEARNING_RATE'])
-WEEKS_OF_DATA = np.random.choice(param_space['WEEKS_OF_DATA'])
+param_space = dict(
+    EMBED_DIM=[32, 48, 64, 128],
+    N_HIDDEN_UNITS=[128, 192, 256, 512, 1024],
+    MIN_PRODUCTS=[2, 3, 4],
+    BATCH_SIZE=[128, 256, 512, 1024, 2048],
+    DROPOUT=[0.0, 0.1, 0.2, 0.3],
+    RECURRENT_DROPOUT=[0.0, 0.1, 0.2, 0.4],
+    WINDOW_LEN=[3, 4],
+    PRED_LOOKBACK=[2, 4, 6],
+    LEARNING_RATE=[0.001, 0.01, 0.1],
+    WEEKS_OF_DATA=[2],
+)
 
 # how many experiments to run
-TRAILS = 2
+TRAILS = 15
 
 trail = 0
 for trail in np.arange(TRAILS):
     if trail == TRAILS:
         break
     else:
+
+        # choose random values for hyperparameters from the search space
+        EMBED_DIM = np.random.choice(param_space["EMBED_DIM"])
+        N_HIDDEN_UNITS = np.random.choice(param_space["N_HIDDEN_UNITS"])
+        MIN_PRODUCTS = np.random.choice(param_space["MIN_PRODUCTS"])
+        BATCH_SIZE = np.random.choice(param_space["BATCH_SIZE"])
+        DROPOUT = np.random.choice(param_space["DROPOUT"])
+        RECURRENT_DROPOUT = np.random.choice(param_space["RECURRENT_DROPOUT"])
+        WINDOW_LEN = np.random.choice(param_space["WINDOW_LEN"])
+        PRED_LOOKBACK = np.random.choice(param_space["PRED_LOOKBACK"])
+        LEARNING_RATE = np.random.choice(param_space["LEARNING_RATE"])
+        WEEKS_OF_DATA = np.random.choice(param_space["WEEKS_OF_DATA"])
+        OPTIMIZER = tf.keras.optimizers.Nadam(learning_rate=LEARNING_RATE)
+
         print("\n🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀")
         print("🚀 Running Trail {}\n".format(trail))
         print("Parameters: \n")
-        print("   EMBED_DIM {}, N_HIDDEN_UNITS {}, MIN_PRODUCTS {}, BATCH_SIZE {}, DROPOUT {}, RECURRENT_DROPOUT {}, WINDOW_LEN {}, PRED_LOOKBACK {}, LEARNING_RATE {}, WEEKS_OF_DATA {}".format(EMBED_DIM, N_HIDDEN_UNITS, MIN_PRODUCTS, BATCH_SIZE, DROPOUT, RECURRENT_DROPOUT, WINDOW_LEN, PRED_LOOKBACK, LEARNING_RATE, WEEKS_OF_DATA))
-        print('🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀')
+        print(
+            "EMBED_DIM {}\nN_HIDDEN_UNITS {}\nMIN_PRODUCTS {}\nBATCH_SIZE {}\nDROPOUT {}\nRECURRENT_DROPOUT {}\nWINDOW_LEN {}\nPRED_LOOKBACK {}\nLEARNING_RATE {}\nWEEKS_OF_DATA {}".format(
+                EMBED_DIM,
+                N_HIDDEN_UNITS,
+                MIN_PRODUCTS,
+                BATCH_SIZE,
+                DROPOUT,
+                RECURRENT_DROPOUT,
+                WINDOW_LEN,
+                PRED_LOOKBACK,
+                LEARNING_RATE,
+                WEEKS_OF_DATA,
+            )
+        )
+        print("🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀🚀")
 
         ####################################################################################################
         # 🚀 INPUT DATA
         ####################################################################################################
 
-        print("\n🚀 Starting experiment on {}".format(datetime.datetime.now() + datetime.timedelta(hours=1)))
+        print(
+            "\n🚀 Starting experiment on {}".format(
+                datetime.datetime.now() + datetime.timedelta(hours=1)
+            )
+        )
         print("     Using DRY_RUN: {} and {} weeks of data".format(DRY_RUN, WEEKS_OF_DATA))
 
         print("     Reading raw input data")
 
         if DRY_RUN:
             sequence_df = pd.read_csv(DATA_PATH3)
-            sequence_df = sequence_df.tail(SEQUENCES).copy()  # take a small subset of data for debugging
+            sequence_df = sequence_df.tail(
+                SEQUENCES
+            ).copy()  # take a small subset of data for debugging
         elif WEEKS_OF_DATA == 2:
             sequence_df = pd.read_csv(DATA_PATH2)
             sequence_df2 = pd.read_csv(DATA_PATH3)
@@ -145,8 +167,11 @@ for trail in np.arange(TRAILS):
 
         MIN_DATE, MAX_DATE = sequence_df["visit_date"].min(), sequence_df["visit_date"].max()
 
-        print("     Data contains {} sequences from {} to {}".format(len(sequence_df), MIN_DATE, MAX_DATE))
-
+        print(
+            "     Data contains {} sequences from {} to {}".format(
+                len(sequence_df), MIN_DATE, MAX_DATE
+            )
+        )
 
         ####################################################################################################
         # 🚀 PREPARE DATA FOR MODELING
@@ -167,7 +192,6 @@ for trail in np.arange(TRAILS):
         # this is required to transform the variable length sequences into equal train-test pairs
         padded_sequences = tf.keras.preprocessing.sequence.pad_sequences(sequences, padding="pre")
 
-
         def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
             pre_len = len(array)
             array = array[
@@ -179,7 +203,6 @@ for trail in np.arange(TRAILS):
             print("     Kept {} valid sequences".format(len(valid_sequences)))
             return valid_sequences
 
-
         padded_sequences = filter_valid_sequences(padded_sequences, min_items=MIN_PRODUCTS)
 
         # split into train/test subsets before reshaping sequence for training/validation
@@ -188,12 +211,13 @@ for trail in np.arange(TRAILS):
         test_index = int(TEST_RATIO * len(padded_sequences))
         padded_sequences_train = padded_sequences[test_index:].copy()
         padded_sequences_test = padded_sequences[:test_index].copy()
-        print("     Training & evaluating model on {} sequences".format(len(padded_sequences_train)))
+        print(
+            "     Training & evaluating model on {} sequences".format(len(padded_sequences_train))
+        )
         print("     Testing recommendations on {} sequences".format(len(padded_sequences_test)))
 
         # clean up memory
         del sequence_df, sequences, padded_sequences
-
 
         # reshape sequences for model training/validation
         def generate_train_test_pairs(array, input_length=WINDOW_LEN, step_size=1):
@@ -210,18 +234,27 @@ for trail in np.arange(TRAILS):
             """
             shape = (array.size - input_length + 2, input_length + 1)
             strides = array.strides * 2
-            window = np.lib.stride_tricks.as_strided(array, strides=strides, shape=shape)[0::step_size]
+            window = np.lib.stride_tricks.as_strided(array, strides=strides, shape=shape)[
+                0::step_size
+            ]
             return window.copy()
-
 
         # generate sliding window of sequences with x=WINDOW_LEN input products and y=1 target product
         print("     Reshaping into train-test sequences with fixed window size for training")
-        padded_sequences_train = np.apply_along_axis(generate_train_test_pairs, 1, padded_sequences_train)
+        padded_sequences_train = np.apply_along_axis(
+            generate_train_test_pairs, 1, padded_sequences_train
+        )
         padded_sequences_train = np.vstack(padded_sequences_train).copy()  # stack sequences
-        print("     Generated {} sequences for training/validation".format(len(padded_sequences_train)))
+        print(
+            "     Generated {} sequences for training/validation".format(
+                len(padded_sequences_train)
+            )
+        )
 
         # filter sequences, note that due to reshaping invalid sequences can be re-introduced
-        padded_sequences_train = filter_valid_sequences(padded_sequences_train, min_items=MIN_PRODUCTS)
+        padded_sequences_train = filter_valid_sequences(
+            padded_sequences_train, min_items=MIN_PRODUCTS
+        )
 
         # shuffle training sequences randomly (rows, not within sequences ofcourse)
         if SHUFFLE_TRAIN_SET:
@@ -229,10 +262,19 @@ for trail in np.arange(TRAILS):
 
         # split sequences into subsets for training/validation/testing
         val_index = int(VAL_RATIO * len(padded_sequences_train))
-        X_train, y_train = padded_sequences_train[:-val_index, :-1], padded_sequences_train[:-val_index, -1]
-        X_val, y_val = padded_sequences_train[:val_index, :-1], padded_sequences_train[:val_index, -1]
+        X_train, y_train = (
+            padded_sequences_train[:-val_index, :-1],
+            padded_sequences_train[:-val_index, -1],
+        )
+        X_val, y_val = (
+            padded_sequences_train[:val_index, :-1],
+            padded_sequences_train[:val_index, -1],
+        )
         # how many products should we use per sequence to look back for predicting?
-        X_test, y_test = padded_sequences_test[:, -(PRED_LOOKBACK + 1) : -1], padded_sequences_test[:, -1]
+        X_test, y_test = (
+            padded_sequences_test[:, -(PRED_LOOKBACK + 1) : -1],
+            padded_sequences_test[:, -1],
+        )
 
         # only train-test split (no validation)
         # X_train, y_train = padded_sequences_train[:, :-1], padded_sequences_train[:, -1]
@@ -253,19 +295,19 @@ for trail in np.arange(TRAILS):
 
         del padded_sequences_train, padded_sequences_test
 
-        print("⏱️ Elapsed time for processing input data: {:.3} seconds".format(time.time() - t_prep))
-
+        print(
+            "⏱️ Elapsed time for processing input data: {:.3} seconds".format(time.time() - t_prep)
+        )
 
         ####################################################################################################
         # 🚀 DEFINE AND TRAIN RECURRENT NEURAL NETWORK
         ####################################################################################################
 
         if LOGGING and not DRY_RUN:
-            mlflow.start_run(experiment_id=1)  # start mlflow run for experiment tracking
+            mlflow.start_run()  # start mlflow run for experiment tracking
         t_train = time.time()  # start timer for training
 
         print("\n🧠 Defining network")
-
 
         def embedding_GRU_model(
             vocab_size=N_TOP_PRODUCTS,
@@ -274,12 +316,15 @@ for trail in np.arange(TRAILS):
             batch_size=BATCH_SIZE,
             dropout=DROPOUT,
             recurrent_dropout=RECURRENT_DROPOUT,
-            optimizer=OPTIMIZER
+            optimizer=OPTIMIZER,
         ):
             model = tf.keras.Sequential(
                 [
                     tf.keras.layers.Embedding(  # we can also try hashing instead of embedding
-                        N_TOP_PRODUCTS, EMBED_DIM, batch_input_shape=[BATCH_SIZE, None], mask_zero=True
+                        N_TOP_PRODUCTS,
+                        EMBED_DIM,
+                        batch_input_shape=[BATCH_SIZE, None],
+                        mask_zero=True,
                     ),
                     tf.keras.layers.GRU(
                         N_HIDDEN_UNITS,
@@ -294,13 +339,17 @@ for trail in np.arange(TRAILS):
                     tf.keras.layers.Dense(N_TOP_PRODUCTS, activation="sigmoid"),
                 ]
             )
-            model.compile(loss="sparse_categorical_crossentropy", optimizer=OPTIMIZER, metrics=["accuracy"])
+            model.compile(
+                loss="sparse_categorical_crossentropy", optimizer=OPTIMIZER, metrics=["accuracy"]
+            )
 
             return model
 
-
         model = embedding_GRU_model(
-            vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, num_units=N_HIDDEN_UNITS, batch_size=BATCH_SIZE
+            vocab_size=N_TOP_PRODUCTS,
+            embed_dim=EMBED_DIM,
+            num_units=N_HIDDEN_UNITS,
+            batch_size=BATCH_SIZE,
         )
 
         # network info
@@ -336,7 +385,6 @@ for trail in np.arange(TRAILS):
 
         print("\n🧠 Evaluating network")
 
-
         def generate_predicted_sequences(y_pred_probs, output_length=10):
             """Function to extract predicted output sequences. Output is based on the predicted logit values
             where the highest probability corresponds to the first recommended item and so forth.
@@ -351,10 +399,11 @@ for trail in np.arange(TRAILS):
             # obtain indices of highest logit values, the position corresponds to the encoded item
             ind_of_max_logits = np.argpartition(y_pred_probs, -output_length)[-output_length:]
             # order the sequence, sorting the negative values ascending equals sorting descending
-            ordered_predicted_sequences = ind_of_max_logits[np.argsort(-y_pred_probs[ind_of_max_logits])]
+            ordered_predicted_sequences = ind_of_max_logits[
+                np.argsort(-y_pred_probs[ind_of_max_logits])
+            ]
 
             return ordered_predicted_sequences.copy()
-
 
         def extract_overlap_per_sequence(X_test, y_pred):
             overlap_items = [
@@ -362,13 +411,11 @@ for trail in np.arange(TRAILS):
             ]
             return overlap_items
 
-
         def compute_average_novelty(X_test, y_pred):
             overlap_items = extract_overlap_per_sequence(X_test, y_pred)
             overlap_sum = np.sum([len(overlap_items[row]) for row in range(len(overlap_items))])
             average_novelty = 1 - (overlap_sum / (len(X_test) * X_test.shape[1]))
             return average_novelty
-
 
         t_pred = time.time()  # start timer for predictions
         print("     Creating recommendations on test set")
@@ -388,7 +435,9 @@ for trail in np.arange(TRAILS):
         predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
         predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5 recommendations
         predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 3 recommendations
-        y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation (predicted next click)
+        y_pred = np.vstack(
+            predicted_sequences_10[:, 0]
+        )  # top 1 recommendation (predicted next click)
         del y_pred_probs
 
         # TODO this ml_metric + vstack shit could be implemented faster
@@ -421,7 +470,12 @@ for trail in np.arange(TRAILS):
         validation_plots, ax = plt.subplots(2, 1, figsize=(10, 6))
         plt.subplot(211)  # plot loss over epochs
         plt.plot(
-            epochs, train_loss_values, "deepskyblue", linestyle="dashed", marker="o", label="Train Loss"
+            epochs,
+            train_loss_values,
+            "deepskyblue",
+            linestyle="dashed",
+            marker="o",
+            label="Train Loss",
         )
         plt.plot(epochs, val_loss_values, "springgreen", marker="o", label="Val Loss")
 
@@ -432,7 +486,12 @@ for trail in np.arange(TRAILS):
 
         plt.subplot(212)  # plot accuracy over epochs
         plt.plot(
-            epochs, train_acc_values, "deepskyblue", linestyle="dashed", marker="o", label="Train Accuracy"
+            epochs,
+            train_acc_values,
+            "deepskyblue",
+            linestyle="dashed",
+            marker="o",
+            label="Train Accuracy",
         )
         plt.plot(epochs, val_acc_values, "springgreen", marker="o", label="Val Accuracy")
         plt.plot(epochs[-1], accuracy, "#16a085", marker="8", markersize=12, label="Test Accuracy")
@@ -486,8 +545,12 @@ for trail in np.arange(TRAILS):
             mlflow.log_metric("Pred secs", np.round(pred_time))
 
             # Log artifacts
-            mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_keras_embedding.py")  # log executed code
-            mlflow.log_artifact("marnix-single-flow-rnn/plots/validation_plots.png")  # log validation plots
+            mlflow.log_artifact(
+                "marnix-single-flow-rnn/gru_tf2_keras_embedding.py"
+            )  # log executed code
+            mlflow.log_artifact(
+                "marnix-single-flow-rnn/plots/validation_plots.png"
+            )  # log validation plots
 
             file = "marnix-single-flow-rnn/model_config.txt"  # log detailed model settings
             with open(file, "w") as model_config:
@@ -497,7 +560,17 @@ for trail in np.arange(TRAILS):
             mlflow.end_run()
 
         if PARAM_SEARCH:
-            del X_train, y_train, X_test, y_test, X_val, y_val, model, predicted_sequences_10, y_pred
+            del (
+                X_train,
+                y_train,
+                X_test,
+                y_test,
+                X_val,
+                y_val,
+                model,
+                predicted_sequences_10,
+                y_pred,
+            )
 
         print("✅ All done, total elapsed time: {:.3} minutes".format((time.time() - t_prep) / 60))
 
