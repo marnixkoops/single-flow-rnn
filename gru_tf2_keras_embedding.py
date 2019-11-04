@@ -71,11 +71,11 @@ SHUFFLE_TRAIN_SET = True
 
 # dry run constants
 if DRY_RUN:
-    SEQUENCES = 100000
-    N_TOP_PRODUCTS = 100
-    EMBED_DIM = 16
-    N_HIDDEN_UNITS = 32
-    BATCH_SIZE = 8
+    SEQUENCES = 1000000
+    N_TOP_PRODUCTS = 1000
+    EMBED_DIM = 32
+    N_HIDDEN_UNITS = 64
+    BATCH_SIZE = 16
 
 ####################################################################################################
 # 🚀 INPUT DATA
@@ -360,6 +360,57 @@ coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
 novelty = np.round(compute_average_novelty(X_test, predicted_sequences_5), 4)
 
 print("     Accuracy @ 1   {:.4}%".format(accuracy * 100))
+print("     MAP @ 3        {:.4}%".format(map3 * 100))
+print("     MAP @ 5        {:.4}%".format(map5 * 100))
+print("     MAP @ 10       {:.4}%".format(map10 * 100))
+print("     MAP @ 15       {:.4}%".format(map15 * 100))
+print("     Coverage       {:.4}%".format(coverage * 100))
+print("     Novelty        {:.4}%".format(novelty * 100))
+
+print("\n     Baseline Metrics:")
+print("     Top 5 Most Popular:")
+
+pop_products = [  # simple because encoding in tokenizer is done based on frequency
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+]
+pop_products = np.repeat([pop_products], axis=0, repeats=len(y_test))
+map3 = np.round(average_precision.mapk(y_test, pop_products, k=3), 4)
+map5 = np.round(average_precision.mapk(y_test, pop_products, k=5), 4)
+map10 = np.round(average_precision.mapk(y_test, pop_products, k=10), 4)
+map15 = np.round(average_precision.mapk(y_test, pop_products, k=15), 4)
+coverage = np.round(len(np.unique(pop_products)) / len(np.unique(y_test)), 4)
+novelty = np.round(compute_average_novelty(X_test, pop_products[:, 0:5]), 4)
+
+print("     MAP @ 3        {:.4}%".format(map3 * 100))
+print("     MAP @ 5        {:.4}%".format(map5 * 100))
+print("     MAP @ 10       {:.4}%".format(map10 * 100))
+print("     MAP @ 15       {:.4}%".format(map15 * 100))
+print("     Coverage       {:.4}%".format(coverage * 100))
+print("     Novelty        {:.4}%".format(novelty * 100))
+
+print("     Last 5 Views:")
+
+map3 = np.round(average_precision.mapk(y_test, X_test[:, -3:], k=3), 4)
+map5 = np.round(average_precision.mapk(y_test, X_test[:, -5:], k=5), 4)
+map10 = np.round(average_precision.mapk(y_test, X_test[:, -10:], k=10), 4)
+map15 = np.round(average_precision.mapk(y_test, X_test[:, -15:], k=15), 4)
+coverage = np.round(len(np.unique(X_test[:, -5:])) / len(np.unique(y_test)), 4)
+novelty = np.round(compute_average_novelty(X_test, X_test[:, -5:]), 4)
+
 print("     MAP @ 3        {:.4}%".format(map3 * 100))
 print("     MAP @ 5        {:.4}%".format(map5 * 100))
 print("     MAP @ 10       {:.4}%".format(map10 * 100))
