@@ -71,11 +71,12 @@ SHUFFLE_TRAIN_SET = True
 
 # dry run constants
 if DRY_RUN:
-    SEQUENCES = 1000000
+    SEQUENCES = 100000
     N_TOP_PRODUCTS = 1000
     EMBED_DIM = 32
     N_HIDDEN_UNITS = 64
-    BATCH_SIZE = 16
+    BATCH_SIZE = 32
+    MAX_EPOCHS = 2
 
 ####################################################################################################
 # 🚀 INPUT DATA
@@ -295,7 +296,7 @@ print(
 print("\n🧠 Evaluating network")
 
 
-def generate_predicted_sequences(y_pred_probs, output_length=10):
+def generate_predicted_sequences(y_pred_probs, output_length=15):
     """Function to extract predicted output sequences. Output is based on the predicted logit values
     where the highest probability corresponds to the first recommended item and so forth.
     Output positions are based on probability from high to low so the output sequence is ordered.
@@ -315,9 +316,7 @@ def generate_predicted_sequences(y_pred_probs, output_length=10):
 
 
 def extract_overlap_per_sequence(X_test, y_pred):
-    overlap_items = [
-        set(X_test[row]) & set(predicted_sequences_5[row]) for row in range(len(X_test))
-    ]
+    overlap_items = [set(X_test[row]) & set(predicted_sequences[row]) for row in range(len(X_test))]
     return overlap_items
 
 
@@ -326,6 +325,9 @@ def compute_average_novelty(X_test, y_pred):
     overlap_sum = np.sum([len(overlap_items[row]) for row in range(len(overlap_items))])
     average_novelty = 1 - (overlap_sum / (len(X_test) * X_test.shape[1]))
     return average_novelty
+
+
+extract_overlap_per_sequence(X_test,)
 
 
 t_pred = time.time()  # start timer for predictions
@@ -342,22 +344,23 @@ print(
 
 print("\n     Performance metrics on test set:")
 
+
+X_test[:, -5:]
+
 # process recomendations, extract top 10 recommendations based on the probabilities
-predicted_sequences_10 = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
-predicted_sequences_5 = predicted_sequences_10[:, :5]  # top 5 recommendations
-predicted_sequences_3 = predicted_sequences_10[:, :3]  # top 3 recommendations
-y_pred = np.vstack(predicted_sequences_10[:, 0])  # top 1 recommendation (predicted next click)
+predicted_sequences = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
+y_pred = np.vstack(predicted_sequences[:, 0])  # top 1 recommendation (predicted next click)
 del y_pred_probs
 
 # TODO this ml_metric + vstack shit could be implemented faster
 accuracy = np.round(accuracy_score(y_test, y_pred), 4)
 y_test = np.vstack(y_test)
-map3 = np.round(average_precision.mapk(y_test, predicted_sequences_3, k=3), 4)
-map5 = np.round(average_precision.mapk(y_test, predicted_sequences_5, k=5), 4)
-map10 = np.round(average_precision.mapk(y_test, predicted_sequences_10, k=10), 4)
-map15 = np.round(average_precision.mapk(y_test, predicted_sequences_10, k=15), 4)
-coverage = np.round(len(np.unique(y_pred)) / len(np.unique(y_test)), 4)
-novelty = np.round(compute_average_novelty(X_test, predicted_sequences_5), 4)
+map3 = np.round(average_precision.mapk(y_test, predicted_sequences, k=3), 4)
+map5 = np.round(average_precision.mapk(y_test, predicted_sequences, k=5), 4)
+map10 = np.round(average_precision.mapk(y_test, predicted_sequences, k=10), 4)
+map15 = np.round(average_precision.mapk(y_test, predicted_sequences, k=15), 4)
+coverage = np.round(len(np.unique(predicted_sequences[:, :5])) / len(np.unique(X_train)), 4)
+novelty = np.round(compute_average_novelty(X_test[:, -5:], predicted_sequences[:, :5]), 4)
 
 print("     Accuracy @ 1   {:.4}%".format(accuracy * 100))
 print("     MAP @ 3        {:.4}%".format(map3 * 100))
@@ -387,14 +390,17 @@ pop_products = [  # simple because encoding in tokenizer is done based on freque
     14,
     15,
 ]
+
 pop_products = np.repeat([pop_products], axis=0, repeats=len(y_test))
+accuracy = np.round(accuracy_score(y_test, pop_products[:, -1:]), 4)
 map3 = np.round(average_precision.mapk(y_test, pop_products, k=3), 4)
 map5 = np.round(average_precision.mapk(y_test, pop_products, k=5), 4)
 map10 = np.round(average_precision.mapk(y_test, pop_products, k=10), 4)
 map15 = np.round(average_precision.mapk(y_test, pop_products, k=15), 4)
-coverage = np.round(len(np.unique(pop_products)) / len(np.unique(y_test)), 4)
-novelty = np.round(compute_average_novelty(X_test, pop_products[:, 0:5]), 4)
+coverage = np.round(len(np.unique(pop_products[:, :5])) / len(np.unique(X_train)), 4)
+novelty = np.round(compute_average_novelty(X_test[:, -5:], pop_products[:, :5]), 4)
 
+print("     Accuracy @ 1   {:.4}%".format(accuracy * 100))
 print("     MAP @ 3        {:.4}%".format(map3 * 100))
 print("     MAP @ 5        {:.4}%".format(map5 * 100))
 print("     MAP @ 10       {:.4}%".format(map10 * 100))
@@ -404,13 +410,15 @@ print("     Novelty        {:.4}%".format(novelty * 100))
 
 print("     Last 5 Views:")
 
+accuracy = np.round(accuracy_score(y_test, X_test[:, -1:]), 4)
 map3 = np.round(average_precision.mapk(y_test, X_test[:, -3:], k=3), 4)
 map5 = np.round(average_precision.mapk(y_test, X_test[:, -5:], k=5), 4)
 map10 = np.round(average_precision.mapk(y_test, X_test[:, -10:], k=10), 4)
 map15 = np.round(average_precision.mapk(y_test, X_test[:, -15:], k=15), 4)
-coverage = np.round(len(np.unique(X_test[:, -5:])) / len(np.unique(y_test)), 4)
+coverage = np.round(len(np.unique(X_test[:, -5:])) / len(np.unique(X_train)), 4)
 novelty = np.round(compute_average_novelty(X_test, X_test[:, -5:]), 4)
 
+print("     Accuracy @ 1   {:.4}%".format(accuracy * 100))
 print("     MAP @ 3        {:.4}%".format(map3 * 100))
 print("     MAP @ 5        {:.4}%".format(map5 * 100))
 print("     MAP @ 10       {:.4}%".format(map10 * 100))
