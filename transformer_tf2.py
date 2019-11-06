@@ -7,8 +7,6 @@ import warnings
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.python.client import device_lib
-from tensorflow.keras import backend  # for clearing the session
-
 
 import mlflow
 from ml_metrics import average_precision
@@ -52,19 +50,19 @@ DATA_PATH3 = "marnix-single-flow-rnn/data/ga_product_sequence_20191027.csv"
 INPUT_VAR = "product_sequence"
 
 # data constants
-N_TOP_PRODUCTS = 15000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
+N_TOP_PRODUCTS = 10000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
 MIN_PRODUCTS = 3  # sequences with less products are considered invalid and removed
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
 PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 
 # model constants
 EMBED_DIM = 48
-N_HIDDEN_UNITS = 256
-MAX_EPOCHS = 24
+N_HIDDEN_UNITS = 192
+MAX_EPOCHS = 16
 BATCH_SIZE = 1024
 DROPOUT = 0.25
-RECURRENT_DROPOUT = 0.25
-LEARNING_RATE = 0.004
+RECURRENT_DROPOUT = 0.1
+LEARNING_RATE = 0.001
 OPTIMIZER = tf.keras.optimizers.Nadam(learning_rate=LEARNING_RATE)
 
 # cv constants
@@ -224,8 +222,6 @@ print("⏱️ Elapsed time for processing input data: {:.3} seconds".format(time
 # 🚀 DEFINE AND TRAIN RECURRENT NEURAL NETWORK
 ####################################################################################################
 
-tf.keras.backend.clear_session()  # clear keras graphs in memory
-
 if LOGGING and not DRY_RUN:
     mlflow.start_run(experiment_id=0)  # start mlflow run for experiment tracking
 t_train = time.time()  # start timer for training
@@ -332,8 +328,6 @@ def compute_average_novelty(X_test, y_pred):
     return average_novelty
 
 
-# in case of memory errors try something like predict_on_batch or predict_generator or
-# https://stackoverflow.com/questions/52642756/memory-error-in-predict-on-batch-on-large-data-set
 t_pred = time.time()  # start timer for predictions
 print("     Creating recommendations on test set")
 y_pred_probs = model.predict(X_test)
@@ -394,39 +388,39 @@ pop_products = [
 ]  # simple because tokenizer encoding is based on occurence, 1 is most frequent etc.
 
 pop_products = np.repeat([pop_products], axis=0, repeats=len(y_test))
-accuracy_pop = np.round(accuracy_score(y_test, pop_products[:, -1:]), 4)
-map3_pop = np.round(average_precision.mapk(y_test, pop_products, k=3), 4)
-map5_pop = np.round(average_precision.mapk(y_test, pop_products, k=5), 4)
-map10_pop = np.round(average_precision.mapk(y_test, pop_products, k=10), 4)
-map15_pop = np.round(average_precision.mapk(y_test, pop_products, k=15), 4)
-coverage_pop = np.round(len(np.unique(pop_products[:, :5])) / len(np.unique(X_train)), 4)
-novelty_pop = np.round(compute_average_novelty(X_test[:, -5:], pop_products[:, :5]), 4)
+accuracy = np.round(accuracy_score(y_test, pop_products[:, -1:]), 4)
+map3 = np.round(average_precision.mapk(y_test, pop_products, k=3), 4)
+map5 = np.round(average_precision.mapk(y_test, pop_products, k=5), 4)
+map10 = np.round(average_precision.mapk(y_test, pop_products, k=10), 4)
+map15 = np.round(average_precision.mapk(y_test, pop_products, k=15), 4)
+coverage = np.round(len(np.unique(pop_products[:, :5])) / len(np.unique(X_train)), 4)
+novelty = np.round(compute_average_novelty(X_test[:, -5:], pop_products[:, :5]), 4)
 
-print("     Accuracy @ 1   {:.4}%".format(accuracy_pop * 100))
-print("     MAP @ 3        {:.4}%".format(map3_pop * 100))
-print("     MAP @ 5        {:.4}%".format(map5_pop * 100))
-print("     MAP @ 10       {:.4}%".format(map10_pop * 100))
-print("     MAP @ 15       {:.4}%".format(map15_pop * 100))
-print("     Coverage       {:.4}%".format(coverage_pop * 100))
-print("     Novelty        {:.4}%".format(novelty_pop * 100))
+print("     Accuracy @ 1   {:.4}%".format(accuracy * 100))
+print("     MAP @ 3        {:.4}%".format(map3 * 100))
+print("     MAP @ 5        {:.4}%".format(map5 * 100))
+print("     MAP @ 10       {:.4}%".format(map10 * 100))
+print("     MAP @ 15       {:.4}%".format(map15 * 100))
+print("     Coverage       {:.4}%".format(coverage * 100))
+print("     Novelty        {:.4}%".format(novelty * 100))
 
 print("\n    Last 5 Views:")
 
-accuracy_views = np.round(accuracy_score(y_test, X_test[:, -1:]), 4)
-map3_views = np.round(average_precision.mapk(y_test, X_test[:, -3:], k=3), 4)
-map5_views = np.round(average_precision.mapk(y_test, X_test[:, -5:], k=5), 4)
-map10_views = np.round(average_precision.mapk(y_test, X_test[:, -10:], k=10), 4)
-map15_views = np.round(average_precision.mapk(y_test, X_test[:, -15:], k=15), 4)
-coverage_views = np.round(len(np.unique(X_test[:, -5:])) / len(np.unique(X_train)), 4)
-novelty_views = np.round(compute_average_novelty(X_test, X_test[:, -5:]), 4)
+accuracy = np.round(accuracy_score(y_test, X_test[:, -1:]), 4)
+map3 = np.round(average_precision.mapk(y_test, X_test[:, -3:], k=3), 4)
+map5 = np.round(average_precision.mapk(y_test, X_test[:, -5:], k=5), 4)
+map10 = np.round(average_precision.mapk(y_test, X_test[:, -10:], k=10), 4)
+map15 = np.round(average_precision.mapk(y_test, X_test[:, -15:], k=15), 4)
+coverage = np.round(len(np.unique(X_test[:, -5:])) / len(np.unique(X_train)), 4)
+novelty = np.round(compute_average_novelty(X_test, X_test[:, -5:]), 4)
 
-print("     Accuracy @ 1   {:.4}%".format(accuracy_views * 100))
-print("     MAP @ 3        {:.4}%".format(map3_views * 100))
-print("     MAP @ 5        {:.4}%".format(map5_views * 100))
-print("     MAP @ 10       {:.4}%".format(map10_views * 100))
-print("     MAP @ 15       {:.4}%".format(map15_views * 100))
-print("     Coverage       {:.4}%".format(coverage_views * 100))
-print("     Novelty        {:.4}%".format(novelty_views * 100))
+print("     Accuracy @ 1   {:.4}%".format(accuracy * 100))
+print("     MAP @ 3        {:.4}%".format(map3 * 100))
+print("     MAP @ 5        {:.4}%".format(map5 * 100))
+print("     MAP @ 10       {:.4}%".format(map10 * 100))
+print("     MAP @ 15       {:.4}%".format(map15 * 100))
+print("     Coverage       {:.4}%".format(coverage * 100))
+print("     Novelty        {:.4}%".format(novelty * 100))
 
 # plot model training history results
 hist_dict = model_history.history
@@ -462,51 +456,6 @@ plt.title("Accuracy (k=1) over Epochs".format(model.loss).upper(), size=13, weig
 plt.legend()
 plt.tight_layout()
 plt.savefig("marnix-single-flow-rnn/plots/validation_plots.png")
-
-####################################################################################################
-# 🚀 INVESTIGATE EMBEDDINGS
-####################################################################################################
-
-# # the weights of the embedding layer are the neural embeddings for products
-# embedding_layer = model.layers[0]
-# embedding_weights = embedding_layer.get_weights()[0]
-# print("Shape of embedding matrix (N_TOP_PRODUCTS, EMBED_DIM): {}".format(embedding_weights.shape))
-# embedding_weights[0]  # This is product 1
-#
-#
-# def plot_product_embedding(embeddings=embedding_weights, product=1):
-#     # data and product info
-#     product_embedding = embeddings[product]  # take embedding for chosen product
-#     product_embedding_matrix = product_embedding.reshape(4, 16)  # reshape array into matrix
-#     product_id = tokenizer.index_word[product]  # this dictionary starts at 1 instead of 0
-#
-#     # visualize embedding
-#     fig, ax = plt.subplots(figsize=(16, 4))
-#     fig = sns.heatmap(
-#         product_embedding_matrix, cmap="YlGnBu", cbar=False, square=False, linewidths=0.1
-#     )
-#     plt.title(
-#         "64-Dimensional Product Embedding \n Encoded product {} → product_id {}".format(
-#             product, product_id
-#         )
-#     )
-#     # plt.tight_layout()
-#
-#
-# tokenizer
-# tokenizer.index_word[1]
-# tokenizer.word_index["828805"]
-# tokenizer.word_index["828804"]
-# tokenizer.word_index["828806"]
-# tokenizer.index_word[64]  # Apple Airpods draadloze oplaadcase
-# tokenizer.index_word[28]  # Samsung 43 inch tv
-# tokenizer.index_word[256]  # LG was-droog combinatie
-#
-# plot_product_embedding(product=1)  # Apple Airpods + oplaadcase
-# plot_product_embedding(product=3)  # Aple Airpods + draadloze oplaadcase
-# plot_product_embedding(product=64)  # Apple Airpods draadloze oplaadcase los
-# plot_product_embedding(product=28)  # Samsung 43 inch tv
-# plot_product_embedding(product=256)  # LG was-droog combinatie
 
 ####################################################################################################
 # 🚀 LOG EXPERIMENT

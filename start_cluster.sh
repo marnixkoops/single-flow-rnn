@@ -42,7 +42,8 @@ function start_cluster() {
     --image-version 1.4-ubuntu18 \
     --initialization-actions ${BUCKET_CODE_URI}${INIT_SCRIPT} \
     --project $PROJECT \
-    --initialization-action-timeout 20m
+    --initialization-action-timeout 20m \
+    --max-idle=8h
 #    --address $EXTERNAL_IP
 }
 
