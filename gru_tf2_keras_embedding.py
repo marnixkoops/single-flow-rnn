@@ -59,7 +59,7 @@ PRED_LOOKBACK = 5  # number of most recent products used per sequence in the tes
 
 # model constants
 EMBED_DIM = 48
-N_HIDDEN_UNITS = 256
+N_HIDDEN_UNITS = 192
 MAX_EPOCHS = 24
 BATCH_SIZE = 1024
 DROPOUT = 0.25
@@ -336,8 +336,9 @@ def compute_average_novelty(X_test, y_pred):
 # https://stackoverflow.com/questions/52642756/memory-error-in-predict-on-batch-on-large-data-set
 t_pred = time.time()  # start timer for predictions
 print("     Creating recommendations on test set")
-y_pred_probs = model.predict(X_test)
+y_pred_probs = model.predict(X_test, batch_size=BATCH_SIZE, use_multiprocessing=True, workers=0)
 # test_scores = model.evaluate(X_test, y_test, verbose=0)
+
 
 pred_time = time.time() - t_pred
 print(
@@ -464,51 +465,6 @@ plt.tight_layout()
 plt.savefig("marnix-single-flow-rnn/plots/validation_plots.png")
 
 ####################################################################################################
-# 🚀 INVESTIGATE EMBEDDINGS
-####################################################################################################
-
-# # the weights of the embedding layer are the neural embeddings for products
-# embedding_layer = model.layers[0]
-# embedding_weights = embedding_layer.get_weights()[0]
-# print("Shape of embedding matrix (N_TOP_PRODUCTS, EMBED_DIM): {}".format(embedding_weights.shape))
-# embedding_weights[0]  # This is product 1
-#
-#
-# def plot_product_embedding(embeddings=embedding_weights, product=1):
-#     # data and product info
-#     product_embedding = embeddings[product]  # take embedding for chosen product
-#     product_embedding_matrix = product_embedding.reshape(4, 16)  # reshape array into matrix
-#     product_id = tokenizer.index_word[product]  # this dictionary starts at 1 instead of 0
-#
-#     # visualize embedding
-#     fig, ax = plt.subplots(figsize=(16, 4))
-#     fig = sns.heatmap(
-#         product_embedding_matrix, cmap="YlGnBu", cbar=False, square=False, linewidths=0.1
-#     )
-#     plt.title(
-#         "64-Dimensional Product Embedding \n Encoded product {} → product_id {}".format(
-#             product, product_id
-#         )
-#     )
-#     # plt.tight_layout()
-#
-#
-# tokenizer
-# tokenizer.index_word[1]
-# tokenizer.word_index["828805"]
-# tokenizer.word_index["828804"]
-# tokenizer.word_index["828806"]
-# tokenizer.index_word[64]  # Apple Airpods draadloze oplaadcase
-# tokenizer.index_word[28]  # Samsung 43 inch tv
-# tokenizer.index_word[256]  # LG was-droog combinatie
-#
-# plot_product_embedding(product=1)  # Apple Airpods + oplaadcase
-# plot_product_embedding(product=3)  # Aple Airpods + draadloze oplaadcase
-# plot_product_embedding(product=64)  # Apple Airpods draadloze oplaadcase los
-# plot_product_embedding(product=28)  # Samsung 43 inch tv
-# plot_product_embedding(product=256)  # LG was-droog combinatie
-
-####################################################################################################
 # 🚀 LOG EXPERIMENT
 ####################################################################################################
 
@@ -561,3 +517,57 @@ if LOGGING and not DRY_RUN:
     mlflow.end_run()
 
 print("✅ All done, total elapsed time: {:.3} minutes".format((time.time() - t_prep) / 60))
+
+####################################################################################################
+# 🚀 INVESTIGATE EMBEDDINGS
+####################################################################################################
+
+# data with product mapping (id, type, name), add mapping from our encoding!
+product_map_df = pd.read_csv("marnix-single-flow-rnn/data/product_mapping.csv")
+product_map_df["product_id"] = product_map_df["product_id"].astype(str)
+product_map_df["encoded_product_id"] = product_map_df["product_id"].map(tokenizer.word_index)
+product_map_df.dropna(inplace=True)
+product_map_df["encoded_product_id"] = product_map_df["encoded_product_id"].astype(int)
+product_map_df[product_map_df["product_id"] == "828805"]
+product_map_df = product_map_df[product_map_df["encoded_product_id"] <= N_TOP_PRODUCTS]
+
+# the weights of the embedding layer are the neural embeddings for products
+embedding_layer = model.layers[0]
+embedding_weights = embedding_layer.get_weights()[0]
+print("Shape of embedding matrix (N_TOP_PRODUCTS, EMBED_DIM): {}".format(embedding_weights.shape))
+embedding_weights[0]  # This is product 1
+
+
+def plot_product_embedding(embeddings=embedding_weights, product=1):
+    # data and product info
+    product_name = product_map_df[product_map_df["encoded_product_id"] == product][
+        "product_name"
+    ].values
+    product_embedding = embeddings[product]  # take embedding for chosen product
+    product_embedding_matrix = product_embedding.reshape(4, 12)  # reshape array into matrix
+    product_id = tokenizer.index_word[product]  # this dictionary starts at 1 instead of 0
+
+    # visualize embedding
+    fig, ax = plt.subplots(figsize=(12, 4))
+    fig = sns.heatmap(
+        product_embedding_matrix, cmap="YlGnBu", cbar=False, square=False, linewidths=0.1
+    )
+    plt.title(
+        "{}-Dimensional Product Embedding \n {} → product_id {} → encoding {}".format(
+            EMBED_DIM, product_name, product_id, product
+        )
+    )
+    plt.tight_layout()
+
+
+plot_product_embedding(product=1)
+plot_product_embedding(product=3)
+
+
+# output tsv files to disk for TensorFlow Embedding projector
+pd.DataFrame(embedding_weights[:5000]).to_csv(
+    "marnix-single-flow-rnn/data/embedding_weights_5k.tsv", sep="\t", header=False, index=False
+)
+product_map_df[product_map_df["encoded_product_id"] <= 5000].to_csv(
+    "marnix-single-flow-rnn/data/product_mapping_5k.tsv", sep="\t", index=False
+)
