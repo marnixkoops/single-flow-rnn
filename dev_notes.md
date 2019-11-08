@@ -1,9 +1,10 @@
-# `TensorFlow 2.0 Embedding GRU`
+# `TensorFlow 2.0 Embedding GRU-RNN`
 
 ## DEV NOTES
 
 ### TO IMPLEMENT
 
+* [ ] Training from previous weights? https://www.tensorflow.org/guide/keras/save_and_serialize
 * [x] Build experimental framework with tracking
 * [x] Set up GCP VM to train on GPU with TensorFlow 1
 * [x] Set up GCP VM to train on GPU with TensorFlow 2
@@ -20,36 +21,51 @@
 
 ##### INPUT DATA
 
+* Remove sessions of only duplicate items
 * Extend used input data
-  * [ ] Customer data
-  * [ ] Session data, purchase of sequence as central context? (other signals add to cart etc)
+  * [ ] Customer demographics/information
+  * [ ] Extra Session data
+    * Purchase central in sequence?
+    * Add to cart
+    * Wishlist
+    * Time spent on page?
+    * Read reviews?
+  * [ ] Seasonality patterns? (Gaming/tv's at night, whitegoods during day or morning more popular?)
 
 ##### DATA PROCESSING
 
+* [ ] Hashing products instead of embedding
 * [ ] Data type to reduce memory footprint (float16 instead of float32?)
   * Post-Training Quantization?
 * [ ] Size of window (sequence length) when generating input-validation pad_sequences
 * [ ] Size of prediction look back window, dynamic or cut-off?
 * [ ] Minimum items required per sequence (>2?)
-* [ ] Hashing products instead of embedding
 
 ##### MODEL ARCHITECTURE
 
-* [ ] Embedding dimensions
-* [ ] Hidden units in GRU cell
+* [ ] Train many to many (output 5?)
+  * Complications: Many short sequences, zero masking output sequence for training?
+* [ ] Attention layer (requires Encoder-Decoder architecture?)
+* [ ] Bi-Directional RNN
+
+
+##### MODEL PARAMETERS
+
 * [ ] Stateful network
-* [ ] Attention layer
+* [x] Embedding dimensions
+* [x] Hidden units in GRU cell
+
 
 ##### TRAINING
 
 * [ ] Input dimension = VOCAB_SIZE + 1 due to masking zero's?
-* [ ]
 * [ ] Learning rate (not that important when using adaptive optimizers like Adam or Nadam)
 * [ ] Batch size (large batch sizes slow down training)
 * [ ] Dropout (Or recurrent dropout), (having training dropout seems to improve performance for now)
 * [ ] Test and tune optimizers (Adam and Nadam seem most promising)
   * Adam = RMSprop + Momentum. Combines the good properties of AdaDelta and RMSProp and hence tends to do better for most of the problems
 * [ ] Gradient clipping
+* [ ] Float16 instead of Float32?
 
 --
 

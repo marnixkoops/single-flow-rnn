@@ -3,12 +3,11 @@ import pandas as pd
 import time
 import datetime
 import warnings
+import gc
 
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.python.client import device_lib
-from tensorflow.keras import backend  # for clearing the session
-
 
 import mlflow
 from ml_metrics import average_precision
@@ -28,7 +27,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 # run settings
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
 LOGGING = True  # mlflow experiment logging
-WEEKS_OF_DATA = 3  # load 1,2 or 3 weeks of data (current implementation is 1)
+WEEKS_OF_DATA = 2  # load 1,2 or 3 weeks of data (current implementation is 1)
 
 # notify where we run and on which device
 # GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
@@ -52,25 +51,25 @@ DATA_PATH3 = "marnix-single-flow-rnn/data/ga_product_sequence_20191027.csv"
 INPUT_VAR = "product_sequence"
 
 # data constants
-N_TOP_PRODUCTS = 15000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
-MIN_PRODUCTS = 3  # sequences with less products are considered invalid and removed
+N_TOP_PRODUCTS = 10000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
+MIN_PRODUCTS = 2  # sequences with less products are considered invalid and removed
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
 PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 
 # model constants
 EMBED_DIM = 48
 N_HIDDEN_UNITS = 192
-MAX_EPOCHS = 24
+MAX_EPOCHS = 12
 BATCH_SIZE = 1024
 DROPOUT = 0.25
 RECURRENT_DROPOUT = 0.25
-LEARNING_RATE = 0.004
+LEARNING_RATE = 0.002
 OPTIMIZER = tf.keras.optimizers.Nadam(learning_rate=LEARNING_RATE)
 
 # cv constants
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1
-TEST_RATIO = 0.1
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
 SHUFFLE_TRAIN_SET = True
 
 # dry run constants
@@ -98,6 +97,7 @@ elif WEEKS_OF_DATA == 2:
     sequence_df = pd.read_csv(DATA_PATH2)
     sequence_df2 = pd.read_csv(DATA_PATH3)
     sequence_df = sequence_df.append(sequence_df2)
+    del sequence_df2
 elif WEEKS_OF_DATA == 3:
     sequence_df = pd.read_csv(DATA_PATH1)
     sequence_df2 = pd.read_csv(DATA_PATH2)
@@ -119,7 +119,6 @@ print("     Data contains {} sequences from {} to {}".format(len(sequence_df), M
 t_prep = time.time()  # start timer for preparing data
 
 print("\n💾 Processing data")
-print("     Including top {} most popular products".format(N_TOP_PRODUCTS))
 print("     Tokenizing, padding, filtering & splitting sequences")
 # define tokenizer to encode sequences while including N most popular items (occurence)
 tokenizer = keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
@@ -127,16 +126,23 @@ tokenizer = keras.preprocessing.text.Tokenizer(num_words=N_TOP_PRODUCTS)
 tokenizer.fit_on_texts(sequence_df["product_sequence"])
 sequences = tokenizer.texts_to_sequences(sequence_df["product_sequence"])
 
+del sequence_df
+gc.collect()
+
 # pre-pad sequences with 0's, length is based on longest present sequence
 # this is required to transform the variable length sequences into equal train-test pairs
 padded_sequences = tf.keras.preprocessing.sequence.pad_sequences(sequences, padding="pre")
 
+if N_TOP_PRODUCTS is None:
+    N_TOP_PRODUCTS = len(tokenizer.word_index) + 1
+    print("     Included ALL products ({})".format(N_TOP_PRODUCTS))
+else:
+    print("     Included top {} most popular products".format(N_TOP_PRODUCTS))
+
 
 def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
     pre_len = len(array)
-    array = array[
-        array[:, -1] != 0
-    ].copy()  # remove all sequences that end in a 0, empty sequences can happen due to top N filter
+    array = array[array[:, -1] != 0]  # .copy() -----> memory error?????
     valid_sequence_mask = np.sum((array != 0), axis=1) >= min_items  # create mask
     valid_sequences = array[valid_sequence_mask].copy()
     print("     Removed {} invalid sequences".format(pre_len - len(valid_sequences)))
@@ -145,6 +151,9 @@ def filter_valid_sequences(array, min_items=MIN_PRODUCTS):
 
 
 padded_sequences = filter_valid_sequences(padded_sequences, min_items=MIN_PRODUCTS)
+
+del sequences
+gc.collect()
 
 # split into train/test subsets before reshaping sequence for training/validation
 # since we process some sequences of a single user into multiple train/validation pairs
@@ -156,7 +165,8 @@ print("     Training & evaluating model on {} sequences".format(len(padded_seque
 print("     Testing recommendations on {} sequences".format(len(padded_sequences_test)))
 
 # clean up memory
-del sequence_df, sequences, padded_sequences
+del padded_sequences
+gc.collect()
 
 
 # reshape sequences for model training/validation
@@ -215,10 +225,10 @@ print("     Training X {}, y {}".format(X_train.shape, y_train.shape))
 print("     Validation X {}, y {}".format(X_val.shape, y_val.shape))
 print("     Testing X {}, y {}".format(X_test.shape, y_test.shape))
 
-del padded_sequences_train, padded_sequences_test
-
 print("⏱️ Elapsed time for processing input data: {:.3} seconds".format(time.time() - t_prep))
 
+del padded_sequences_train, padded_sequences_test
+gc.collect()
 
 ####################################################################################################
 # 🚀 DEFINE AND TRAIN RECURRENT NEURAL NETWORK
@@ -294,6 +304,9 @@ print(
     )
 )
 
+del X_val, y_val, y_train
+gc.collect()
+
 ####################################################################################################
 # 🚀 EVALUATION
 ####################################################################################################
@@ -336,7 +349,15 @@ def compute_average_novelty(X_test, y_pred):
 # https://stackoverflow.com/questions/52642756/memory-error-in-predict-on-batch-on-large-data-set
 t_pred = time.time()  # start timer for predictions
 print("     Creating recommendations on test set")
-y_pred_probs = model.predict(X_test, batch_size=BATCH_SIZE, use_multiprocessing=True, workers=0)
+
+# # reshape into smaller batch size for predictions to avoid memory errors
+#
+# X_test.shape
+#
+# # X_test.reshape(1, 1, 1)
+
+
+y_pred_probs = model.predict(X_test, batch_size=BATCH_SIZE, workers=0, use_multiprocessing=True)
 # test_scores = model.evaluate(X_test, y_test, verbose=0)
 
 
@@ -353,6 +374,7 @@ print("\n     Performance metrics on test set:")
 predicted_sequences = np.apply_along_axis(generate_predicted_sequences, 1, y_pred_probs)
 y_pred = np.vstack(predicted_sequences[:, 0])  # top 1 recommendation (predicted next click)
 del y_pred_probs
+gc.collect()
 
 # TODO this ml_metric + vstack shit could be implemented faster
 accuracy = np.round(accuracy_score(y_test, y_pred), 4)
@@ -517,57 +539,58 @@ if LOGGING and not DRY_RUN:
     mlflow.end_run()
 
 print("✅ All done, total elapsed time: {:.3} minutes".format((time.time() - t_prep) / 60))
+gc.collect()
 
 ####################################################################################################
 # 🚀 INVESTIGATE EMBEDDINGS
 ####################################################################################################
 
-# data with product mapping (id, type, name), add mapping from our encoding!
-product_map_df = pd.read_csv("marnix-single-flow-rnn/data/product_mapping.csv")
-product_map_df["product_id"] = product_map_df["product_id"].astype(str)
-product_map_df["encoded_product_id"] = product_map_df["product_id"].map(tokenizer.word_index)
-product_map_df.dropna(inplace=True)
-product_map_df["encoded_product_id"] = product_map_df["encoded_product_id"].astype(int)
-product_map_df[product_map_df["product_id"] == "828805"]
-product_map_df = product_map_df[product_map_df["encoded_product_id"] <= N_TOP_PRODUCTS]
-
-# the weights of the embedding layer are the neural embeddings for products
-embedding_layer = model.layers[0]
-embedding_weights = embedding_layer.get_weights()[0]
-print("Shape of embedding matrix (N_TOP_PRODUCTS, EMBED_DIM): {}".format(embedding_weights.shape))
-embedding_weights[0]  # This is product 1
-
-
-def plot_product_embedding(embeddings=embedding_weights, product=1):
-    # data and product info
-    product_name = product_map_df[product_map_df["encoded_product_id"] == product][
-        "product_name"
-    ].values
-    product_embedding = embeddings[product]  # take embedding for chosen product
-    product_embedding_matrix = product_embedding.reshape(4, 12)  # reshape array into matrix
-    product_id = tokenizer.index_word[product]  # this dictionary starts at 1 instead of 0
-
-    # visualize embedding
-    fig, ax = plt.subplots(figsize=(12, 4))
-    fig = sns.heatmap(
-        product_embedding_matrix, cmap="YlGnBu", cbar=False, square=False, linewidths=0.1
-    )
-    plt.title(
-        "{}-Dimensional Product Embedding \n {} → product_id {} → encoding {}".format(
-            EMBED_DIM, product_name, product_id, product
-        )
-    )
-    plt.tight_layout()
-
-
-plot_product_embedding(product=1)
-plot_product_embedding(product=3)
-
-
-# output tsv files to disk for TensorFlow Embedding projector
-pd.DataFrame(embedding_weights[:5000]).to_csv(
-    "marnix-single-flow-rnn/data/embedding_weights_5k.tsv", sep="\t", header=False, index=False
-)
-product_map_df[product_map_df["encoded_product_id"] <= 5000].to_csv(
-    "marnix-single-flow-rnn/data/product_mapping_5k.tsv", sep="\t", index=False
-)
+# # data with product mapping (id, type, name), add mapping from our encoding!
+# product_map_df = pd.read_csv("marnix-single-flow-rnn/data/product_mapping.csv")
+# product_map_df["product_id"] = product_map_df["product_id"].astype(str)
+# product_map_df["encoded_product_id"] = product_map_df["product_id"].map(tokenizer.word_index)
+# product_map_df.dropna(inplace=True)
+# product_map_df["encoded_product_id"] = product_map_df["encoded_product_id"].astype(int)
+# product_map_df[product_map_df["product_id"] == "828805"]
+# product_map_df = product_map_df[product_map_df["encoded_product_id"] <= N_TOP_PRODUCTS]
+#
+# # the weights of the embedding layer are the neural embeddings for products
+# embedding_layer = model.layers[0]
+# embedding_weights = embedding_layer.get_weights()[0]
+# print("Shape of embedding matrix (N_TOP_PRODUCTS, EMBED_DIM): {}".format(embedding_weights.shape))
+# embedding_weights[0]  # This is product 1
+#
+#
+# def plot_product_embedding(embeddings=embedding_weights, product=1):
+#     # data and product info
+#     product_name = product_map_df[product_map_df["encoded_product_id"] == product][
+#         "product_name"
+#     ].values
+#     product_embedding = embeddings[product]  # take embedding for chosen product
+#     product_embedding_matrix = product_embedding.reshape(4, 12)  # reshape array into matrix
+#     product_id = tokenizer.index_word[product]  # this dictionary starts at 1 instead of 0
+#
+#     # visualize embedding
+#     fig, ax = plt.subplots(figsize=(12, 4))
+#     fig = sns.heatmap(
+#         product_embedding_matrix, cmap="YlGnBu", cbar=False, square=False, linewidths=0.1
+#     )
+#     plt.title(
+#         "{}-Dimensional Product Embedding \n {} → product_id {} → encoding {}".format(
+#             EMBED_DIM, product_name, product_id, product
+#         )
+#     )
+#     plt.tight_layout()
+#
+#
+# plot_product_embedding(product=1)
+# plot_product_embedding(product=3)
+#
+#
+# # output tsv files to disk for TensorFlow Embedding projector
+# pd.DataFrame(embedding_weights[:5000]).to_csv(
+#     "marnix-single-flow-rnn/data/embedding_weights_5k.tsv", sep="\t", header=False, index=False
+# )
+# product_map_df[product_map_df["encoded_product_id"] <= 5000].to_csv(
+#     "marnix-single-flow-rnn/data/product_mapping_5k.tsv", sep="\t", index=False
+# )
