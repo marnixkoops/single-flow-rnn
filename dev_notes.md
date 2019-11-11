@@ -40,6 +40,7 @@
 * [ ] Size of window (sequence length) when generating input-validation pad_sequences
 * [ ] Size of prediction look back window, dynamic or cut-off?
 * [ ] Minimum items required per sequence (>2?)
+* [ ] Train with cross-validation to determine epochs, or use as ensemble to majority vote
 
 ##### MODEL ARCHITECTURE
 

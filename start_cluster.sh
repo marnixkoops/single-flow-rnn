@@ -29,7 +29,7 @@ function start_cluster() {
     --zone "" \
     --single-node \
     --master-machine-type n1-standard-4 \
-    --master-boot-disk-type pd-standard \
+    --master-boot-disk-type pd-ssd \
     --master-boot-disk-size 1024 \
     --master-accelerator type=nvidia-tesla-p100 \
     --image-version 1.4-ubuntu18 \
