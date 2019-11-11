@@ -11,8 +11,6 @@ BUCKET_CODE_URI=gs://marnix-single-flow-rnn/
 
 function build_wheel() {
   python3 -m pip install wheel
-  # pip3 wheel --no-deps .
-  # pip3 wheel --index-url=https://pip.office.coolblue.eu/simple --no-deps data-science-utilities==1.3.9
 }
 
 
@@ -23,11 +21,6 @@ function clear_bucket() {
 
 function upload_to_bucket() {
   gsutil -m cp -r . $BUCKET_CODE_URI
-#  gsutil cp ./*.whl $BUCKET_CODE_URI
-#  gsutil cp $INIT_SCRIPT $BUCKET_CODE_URI
-#  gsutil cp requirements.txt $BUCKET_CODE_URI
-#  gsutil cp recommendersystems/tensorflow_gpu_checks.py $BUCKET_CODE_URI
-#  gsutil cp recommendersystems/cli.py $BUCKET_CODE_URI
 }
 
 function start_cluster() {
@@ -48,7 +41,7 @@ function start_cluster() {
 }
 
 function remove_known_hosts() {
-  # Remove known hosts file to avoid authentication issues on new VM
+  # Remove local known hosts file to avoid authentication issues when upping new VM
   rm -f ~/.ssh/known_hosts
 }
 

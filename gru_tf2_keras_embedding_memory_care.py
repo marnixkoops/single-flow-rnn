@@ -27,7 +27,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 # run settings
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
 LOGGING = False  # mlflow experiment logging
-WEEKS_OF_DATA = 3  # load 1,2 or 3 weeks of data (current implementation is 1)
+WEEKS_OF_DATA = 2  # load 1,2 or 3 weeks of data (current implementation is 1)
 
 # notify where we run and on which device
 # GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
@@ -55,28 +55,30 @@ DATA_PATH4 = "./data/ga_product_sequence_20191103.csv"
 
 # data constants
 N_TOP_PRODUCTS = 15000  # 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
-MIN_PRODUCTS_TRAIN = 3  # sequences with less products are considered invalid and removed
+MIN_PRODUCTS_TRAIN = 2  # sequences with less products are considered invalid and removed
 MIN_PRODUCTS_TEST = 2  # sequences with less products are considered invalid and removed
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
-PRED_LOOKBACK = 4  # number of most recent products used per sequence in the test set to predict on
+PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 
 # model constants
-EMBED_DIM = 48  # for the embedding layer
-N_HIDDEN_UNITS = 192  # for the GRU layer
-MAX_EPOCHS = 1
-BATCH_SIZE = 1024
-DROPOUT = 0.25
-RECURRENT_DROPOUT = 0.25
+EMBED_DIM = 48  # number of dimensions for the embeddings
+N_HIDDEN_UNITS = 192  # number of units in the GRU layers
+MAX_EPOCHS = 1  # maximum number of epochs to train for
+BATCH_SIZE = 1024  # batch size for training
+DROPOUT = 0.25  # input data dropout
+RECURRENT_DROPOUT = 0.25  # hidden state dropout in the GRU during training
 LEARNING_RATE = 0.002
-OPTIMIZER = tf.keras.optimizers.Nadam(learning_rate=LEARNING_RATE)
+OPTIMIZER = tf.keras.optimizers.Nadam(
+    learning_rate=LEARNING_RATE
+)  # tested a couple, this works well
 
 # cv constants
 TRAIN_RATIO = 0.8
-VAL_RATIO = 0.10
-TEST_RATIO = 0.10
+VAL_RATIO = 0.1
+TEST_RATIO = 0.1  # note that the % results in more samples when more weeks of data are used
 SHUFFLE_TRAIN_SET = True
 
-# dry run constants
+# dry run constants for development and debugging
 if DRY_RUN:
     SEQUENCES = 100000
     N_TOP_PRODUCTS = 1000
@@ -91,8 +93,7 @@ if DRY_RUN:
 
 print("\n🚀 Starting experiment on {}".format(datetime.datetime.now() + datetime.timedelta(hours=1)))
 print("     Using DRY_RUN: {} and {} weeks of data".format(DRY_RUN, WEEKS_OF_DATA))
-
-print("     Reading raw input data")
+print("     Reading raw input sequence data from disk")
 
 if DRY_RUN:
     sequence_df = pd.read_csv(DATA_PATH3)
@@ -107,12 +108,18 @@ elif WEEKS_OF_DATA == 3:
     sequence_df2 = pd.read_csv(DATA_PATH2)
     sequence_df3 = pd.read_csv(DATA_PATH3)
     sequence_df = sequence_df.append(sequence_df2).append(sequence_df3)
-    del sequence_df2
+    del sequence_df2, sequence_df3
+elif WEEKS_OF_DATA == 4:
+    sequence_df = pd.read_csv(DATA_PATH1)
+    sequence_df2 = pd.read_csv(DATA_PATH2)
+    sequence_df3 = pd.read_csv(DATA_PATH3)
+    sequence_df4 = pd.read_csv(DATA_PATH4)
+    sequence_df = sequence_df.append(sequence_df2).append(sequence_df3).append(sequence_df4)
+    del sequence_df2, sequence_df3, sequence_df4
 else:
     sequence_df = pd.read_csv(DATA_PATH1)
 
 MIN_DATE, MAX_DATE = sequence_df["visit_date"].min(), sequence_df["visit_date"].max()
-
 print("     Data contains {} sequences from {} to {}".format(len(sequence_df), MIN_DATE, MAX_DATE))
 
 
@@ -120,13 +127,13 @@ print("     Data contains {} sequences from {} to {}".format(len(sequence_df), M
 # 🚀 PREPARE DATA FOR MODELING
 ####################################################################################################
 
+t_prep = time.time()  # start timer for preparing data
+
 
 def print_memory_footprint(array):
     """Prints a statement with the memory size of the input array"""
     print("     Memory footprint of array: {:.4} MegaBytes".format(array.nbytes * 1e-6))
 
-
-t_prep = time.time()  # start timer for preparing data
 
 print("\n💾 Processing data")
 print("     Tokenizing, padding, filtering & splitting sequences")
@@ -150,7 +157,6 @@ else:
     print("     Included top {} most popular products".format(N_TOP_PRODUCTS))
 
 print_memory_footprint(padded_sequences)
-
 
 del sequences
 gc.collect()
@@ -181,6 +187,7 @@ def filter_valid_sequences(array, min_items=MIN_PRODUCTS_TRAIN):
     return valid_sequences
 
 
+# Untested idea to remove sequences that only contain a single unique product (no information)
 # def filter_repeated_unique_product_sequences(array):
 #     """Checks if the last product is equal to all other products in the sequence. The last product
 #     is considered as the first product token can be a 0 due to pre-padding.
@@ -209,7 +216,7 @@ gc.collect()
 
 
 # generate subsequences from longer sequences with a moving window for model training
-# this numpy function is fast but a bit tricky, so be sure to validate output when changing stuff
+# this numpy function is fast but a bit tricky, be sure to validate output when changing stuff
 def generate_train_test_pairs(array, input_length=WINDOW_LEN, step_size=1):
     """Creates multiple subsequences out of longer sequences in the matrix to be used for training.
     Output shape is based on the input_length. Note that the output width is input_length + 1 since
@@ -245,13 +252,14 @@ if SHUFFLE_TRAIN_SET:
     np.random.shuffle(padded_sequences_train)  # shuffles in-place
 
 # split sequences into subsets for training/validation/testing
+# the last column of each row is the target product for each input subsequence
 val_index = int(VAL_RATIO * len(padded_sequences_train))
 X_train, y_train = padded_sequences_train[:-val_index, :-1], padded_sequences_train[:-val_index, -1]
 X_val, y_val = padded_sequences_train[:val_index, :-1], padded_sequences_train[:val_index, -1]
-# how many products should we look back in a sequence for predicting?
+# how many products should we look back into a sequence for predicting?
 X_test, y_test = padded_sequences_test[:, -(PRED_LOOKBACK + 1) : -1], padded_sequences_test[:, -1]
 
-# only train-test split (no validation)
+# only train-test split (no validation), untested but this should improve MAP due to having no gap
 # X_train, y_train = padded_sequences_train[:, :-1], padded_sequences_train[:, -1]
 # X_test, y_test = padded_sequences_test[:, -5:-1], padded_sequences_test[:, -1]
 
@@ -283,7 +291,7 @@ if LOGGING and not DRY_RUN:
 t_train = time.time()  # start timer for training
 
 print("\n🧠 Defining network")
-tf.keras.backend.clear_session()  # clear potential remaining network graphs in memory
+tf.keras.backend.clear_session()  # clear potentially remaining network graphs in the memory
 gc.collect()
 
 
@@ -377,8 +385,14 @@ print("\n🧠 Evaluating recommendations of network")
 t_pred = time.time()  # start timer for predictions
 print("     Creating recommendations on test set")
 
-# memory leak issues when predicting large arrays: https://github.com/keras-team/keras/issues/13118
-y_pred_probs = model.predict(X_test, batch_size=BATCH_SIZE, verbose=0)
+# This occasionaly leads to memory leaking issues when input is large: https://github.com/keras-team/keras/issues/13118
+y_pred_probs = model.predict(X_test, batch_size=BATCH_SIZE)
+
+# predict_on_batch solves memory leak issues?: https://github.com/keras-team/keras/issues/13118
+y_pred_probs = model.predict_on_batch(X_test[:1024])
+
+# different call solves memory leak issues?: https://github.com/keras-team/keras/issues/13118
+model(X_test[:1024])
 
 pred_time = time.time() - t_pred
 print(

@@ -79,7 +79,7 @@ if DRY_RUN:
     N_HIDDEN_UNITS = 32
     BATCH_SIZE = 8
 
-# shitty code to run a random hyperparameter search
+# perform multiple runs each time choosing random hyperparams from the dict
 param_space = dict(
     EMBED_DIM=[32, 48, 64, 128],
     N_HIDDEN_UNITS=[128, 192, 256, 512, 1024],
