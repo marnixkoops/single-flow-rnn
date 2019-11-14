@@ -44,6 +44,8 @@
 
 ##### MODEL ARCHITECTURE
 
+* [ ] Unroll GRU (https://www.tensorflow.org/api_docs/python/tf/keras/layers/GRU)
+* [ ] CuDNN implementation requirements (https://www.tensorflow.org/api_docs/python/tf/keras/layers/GRU)
 * [ ] Train many to many (output 5?)
   * Complications: Many short sequences, zero masking output sequence for training?
 * [ ] Attention layer (requires Encoder-Decoder architecture?)
