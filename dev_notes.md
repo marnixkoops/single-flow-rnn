@@ -21,8 +21,8 @@
 
 ##### INPUT DATA
 
-* Remove sessions of only duplicate items
-* Extend used input data
+* [ ] Remove sessions of only duplicate items
+* [ ] Extend used input data
   * [ ] Customer demographics/information
   * [ ] Extra Session data
     * Purchase central in sequence?
@@ -44,6 +44,8 @@
 
 ##### MODEL ARCHITECTURE
 
+* [ ] For fast CUDNN GRU implementation we need stricly right padding?
+* [ ] sample_weight? More weight on last? (https://www.tensorflow.org/versions/r2.0/api_docs/python/tf/keras/Model)
 * [ ] Unroll GRU (https://www.tensorflow.org/api_docs/python/tf/keras/layers/GRU)
 * [ ] CuDNN implementation requirements (https://www.tensorflow.org/api_docs/python/tf/keras/layers/GRU)
 * [ ] Train many to many (output 5?)

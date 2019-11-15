@@ -26,8 +26,8 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 ####################################################################################################
 
 # run settings
-DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
-LOGGING = True  # mlflow experiment logging
+DRY_RUN = True  # runs flow on small subset of data for speed and disables mlfow tracking
+LOGGING = False  # mlflow experiment logging
 WEEKS_OF_DATA = 3  # use 1, 2, 3 or 4 weeks worth of data (currently in production is 1 week)
 
 # define where we run and on which device (GPU/CPU)
@@ -51,7 +51,7 @@ print("🧠 Running TensorFlow version {} on {}".format(tf.__version__, DEVICE))
 # data constants
 N_TOP_PRODUCTS = 15000  # note, 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
 MIN_PRODUCTS_TRAIN = 2  # sequences with less products (excluding target) are invalid and removed
-MIN_PRODUCTS_TEST = 2  # sequences with less products (excluding target) are invalid and removed
+MIN_PRODUCTS_TEST = 1  # sequences with less products (excluding target) are invalid and removed
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
 PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 TOP_K_OUTPUT_LEN = 10  # number of top K product recommendations to extract from the probabilities
@@ -59,36 +59,36 @@ TOP_K_OUTPUT_LEN = 10  # number of top K product recommendations to extract from
 # model constants
 EMBED_DIM = 48  # number of dimensions for the embeddings
 N_HIDDEN_UNITS = 192  # number of units in the GRU layers
-MAX_EPOCHS = 24  # maximum number of epochs to train for
+MAX_EPOCHS = 48  # maximum number of epochs to train for
 BATCH_SIZE = 1024  # batch size for training (512 slower+more accurate, 1024 faster+less accurate)
-DROPOUT = 0.25  # input data dropout
-RECURRENT_DROPOUT = 0.25  # recurrent state dropout during training, fast CuDNN GPU requires 0!
-LEARNING_RATE = 0.002
-OPTIMIZER = tf.keras.optimizers.Nadam(
+DROPOUT = 0.1  # input data dropout
+RECURRENT_DROPOUT = 0.1  # recurrent state dropout during training, fast CuDNN GPU requires 0!
+LEARNING_RATE = 0.004
+OPTIMIZER = tf.keras.optimizers.Adam(
     learning_rate=LEARNING_RATE
 )  # note, tested a couple (RMSProp, Adam, Nadam), Adam and Nadam both seem fast with good results
 
 # Automatic FP16 mixed-precision training instead of FP32 for gradients and model weights
 # See: https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html#tensorflow-amp
 # Needs more investigation in terms of speed, gives a warning for memory heavy tensor conversion
-OPTIMIZER = tf.train.experimental.enable_mixed_precision_graph_rewrite(OPTIMIZER)
+# OPTIMIZER = tf.train.experimental.enable_mixed_precision_graph_rewrite(OPTIMIZER)
 
 # training constants
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1  # note, creates a gap in time between train/test, no val improves performance
-TEST_RATIO = 0.1  # note, this % results in more samples when more weeks of data are used
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15  # note, creates a gap in time between train/test, no val improves performance
+TEST_RATIO = 0.15  # note, this % results in more samples when more weeks of data are used
 SHUFFLE_TRAIN_SET = True  # shuffles the training sequences (row-wise), seems smart for training
 SHUFFLE_TRAIN_AND_VAL_SET = False  # shuffles both the training and validation sequences
 DATA_IMBALANCE_CORRECTION = True  # Supply product weights during model training to avoid bias
 
 # dry run constants for development and debugging
 if DRY_RUN:
-    SEQUENCES = 100000
-    N_TOP_PRODUCTS = 100
-    EMBED_DIM = 32
-    N_HIDDEN_UNITS = 64
+    SEQUENCES = 200000
+    N_TOP_PRODUCTS = 1000
+    EMBED_DIM = 48
+    N_HIDDEN_UNITS = 192
     BATCH_SIZE = 32
-    MAX_EPOCHS = 2
+    MAX_EPOCHS = 12
 
 # Current best set of parameters (10K products)
 # WEEKS_OF_DATA = 3
@@ -120,10 +120,10 @@ print("     Using DRY_RUN: {} and {} weeks of data".format(DRY_RUN, WEEKS_OF_DAT
 print("     Reading raw input sequence data from disk")
 
 # input data
-DATA_PATH1 = "marnix-single-flow-rnn/data/ga_product_sequence_20191013.csv"
-DATA_PATH2 = "marnix-single-flow-rnn/data/ga_product_sequence_20191020.csv"
-DATA_PATH3 = "marnix-single-flow-rnn/data/ga_product_sequence_20191027.csv"
-DATA_PATH4 = "marnix-single-flow-rnn/data/ga_product_sequence_20191103.csv"
+DATA_PATH1 = "./data/ga_product_sequence_20191013.csv"
+DATA_PATH2 = "./data/ga_product_sequence_20191020.csv"
+DATA_PATH3 = "./data/ga_product_sequence_20191027.csv"
+DATA_PATH4 = "./data/ga_product_sequence_20191103.csv"
 
 if DRY_RUN:
     sequence_df = pd.read_csv(DATA_PATH3)
@@ -169,6 +169,12 @@ def print_memory_footprint(array):
     print("     Memory footprint of array: {:.4} MegaBytes".format(array.nbytes * 1e-6))
 
 
+# # hash tokens
+# hashing = tf.keras.preprocessing.text.hashing_trick(
+#     sequence_df["product_sequence"], n=10, hash_function="md5", lower=True, split=","
+# )
+
+
 print("\n💾 Processing data")
 print("     Tokenizing, padding, filtering & splitting sequences")
 # define tokenizer to encode sequences and include N most popular items (occurence)
@@ -177,6 +183,7 @@ tokenizer.fit_on_texts(sequence_df["product_sequence"])  # encode string sequenc
 sequences = tokenizer.texts_to_sequences(sequence_df["product_sequence"])  # array of sequences
 del sequence_df
 gc.collect()
+
 
 # pre-pad sequences with 0's, length is based on longest present sequence
 # this is required to transform the variable length sequences into equal train/test pairs
@@ -199,6 +206,14 @@ gc.collect()
 test_index = int(TEST_RATIO * len(padded_sequences))
 padded_sequences_train = padded_sequences[:-test_index].copy()
 padded_sequences_test = padded_sequences[-test_index:].copy()
+
+# generate a dictionary with unique value counts to be used as class_weight in model fit
+# the idea is to combat against bias due to imbalanced training data
+if DATA_IMBALANCE_CORRECTION:
+    print("     Generating product occurence dictionary to be used as class weights against bias")
+    product_token, product_count = np.unique(padded_sequences_train, return_counts=True)
+    product_count_dict = dict(zip(product_token, product_count))
+    del product_count_dict[0]  # drop 0 token, which is padding and not a product
 
 
 def filter_valid_sequences(array, min_items=MIN_PRODUCTS_TRAIN):
@@ -244,16 +259,6 @@ print("\n     Training & evaluating model on {} sequences".format(len(padded_seq
 print("     Testing recommendations on {} sequences".format(len(padded_sequences_test)))
 print_memory_footprint(padded_sequences_train)
 print_memory_footprint(padded_sequences_test)
-
-# generate a dictionary with unique value counts to be used as class_weight in model fit
-# the idea is to combat against bias due to highly imbalanced training data
-if DATA_IMBALANCE_CORRECTION:
-    print("     Generating product occurence dictionary to be used as class weights against bias")
-    product_token, product_count = np.unique(padded_sequences_train, return_counts=True)
-    product_count_dict = dict(zip(product_token, product_count))
-    del product_count_dict[0]  # drop 0 token, which is padding and not a product
-else:
-    product_count_dict = None
 
 # clean up memory
 del padded_sequences
@@ -396,6 +401,7 @@ model = embedding_GRU_model(
     vocab_size=N_TOP_PRODUCTS, embed_dim=EMBED_DIM, num_units=N_HIDDEN_UNITS, batch_size=BATCH_SIZE
 )
 
+
 # network info
 print("\n     Network summary: \n{}".format(model.summary()))
 total_params = model.count_params()
@@ -421,6 +427,7 @@ model_history = model.fit(
     callbacks=[early_stopping_monitor],
     class_weight=product_count_dict,  # this is a dictionary with product occurence count
 )
+
 
 train_time = time.time() - t_train
 print(
@@ -466,8 +473,8 @@ def generate_predicted_sequences(y_pred_probs, output_length=TOP_K_OUTPUT_LEN):
 # https://github.com/tensorflow/tensorflow/issues/33009
 # y_pred_probs = model.predict(X_test, batch_size=BATCH_SIZE)
 
-# predict in multiple batches to fit in GPU memory (array is 4 bytes * sequences * products = big)
-dividing_row = len(X_test) // 3
+# predict in two stages to fit in GPU memory (array is 4 bytes * sequences * products = big)
+dividing_row = len(X_test) // 2
 remainder_due_to_batch_size = dividing_row % BATCH_SIZE  # needs to fit into BATCH_SIZE
 dividing_row = dividing_row - remainder_due_to_batch_size
 
@@ -475,7 +482,7 @@ predicted_sequences = np.empty(
     [len(X_test), TOP_K_OUTPUT_LEN], dtype=np.float32
 )  # pre-allocate required memory for array for efficiency
 
-# first batch of recomendations
+# first partition of recomendations
 y_pred_probs = model.predict(X_test[:dividing_row])
 predicted_sequences[:dividing_row] = np.apply_along_axis(
     generate_predicted_sequences, 1, y_pred_probs  # extract TOP_K_OUTPUT_LEN recommendations
@@ -483,17 +490,9 @@ predicted_sequences[:dividing_row] = np.apply_along_axis(
 del y_pred_probs
 gc.collect()
 
-# second batch of recomendations
-y_pred_probs = model.predict(X_test[dividing_row : dividing_row * 2])
-predicted_sequences[dividing_row : dividing_row * 2] = np.apply_along_axis(
-    generate_predicted_sequences, 1, y_pred_probs  # extract TOP_K_OUTPUT_LEN recommendations
-)
-del y_pred_probs
-gc.collect()
-
-# third batch of recomendations
-y_pred_probs = model.predict(X_test[dividing_row * 2 :])
-predicted_sequences[dividing_row * 2 :] = np.apply_along_axis(
+# second partition of recomendations
+y_pred_probs = model.predict(X_test[dividing_row:])
+predicted_sequences[dividing_row:] = np.apply_along_axis(
     generate_predicted_sequences, 1, y_pred_probs  # extract TOP_K_OUTPUT_LEN recommendations
 )
 del y_pred_probs
@@ -643,7 +642,7 @@ plt.ylabel("Accuracy")
 plt.title("Accuracy (k=1) over Epochs".format(model.loss).upper(), size=13, weight="bold")
 plt.legend()
 plt.tight_layout()
-plt.savefig("marnix-single-flow-rnn/plots/validation_plots.png")
+plt.savefig("./plots/validation_plots.png")
 
 ####################################################################################################
 # 🚀 LOG EXPERIMENT
@@ -686,8 +685,8 @@ if LOGGING and not DRY_RUN:
     mlflow.log_metric("Pred secs", np.round(pred_time))
 
     # Log artifacts
-    mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_keras_embedding.py")  # log executed code
-    mlflow.log_artifact("marnix-single-flow-rnn/plots/validation_plots.png")  # log validation plots
+    mlflow.log_artifact("./gru_tf2_keras_embedding.py")  # log executed code
+    mlflow.log_artifact("./plots/validation_plots.png")  # log validation plots
 
     mlflow.end_run()
 
@@ -700,7 +699,7 @@ gc.collect()
 ####################################################################################################
 
 # # data with product mapping (id, type, name), add mapping from our encoding!
-# product_map_df = pd.read_csv("marnix-single-flow-rnn/data/product_mapping.csv")
+# product_map_df = pd.read_csv("./data/product_mapping.csv")
 # product_map_df["product_id"] = product_map_df["product_id"].astype(str)
 # product_map_df["encoded_product_id"] = product_map_df["product_id"].map(tokenizer.word_index)
 # product_map_df.dropna(inplace=True)
@@ -743,8 +742,8 @@ gc.collect()
 #
 # # output tsv files to disk for embedding projections with https://projector.tensorflow.org
 # pd.DataFrame(embedding_weights[:5000]).to_csv(
-#     "marnix-single-flow-rnn/data/embedding_weights_5k.tsv", sep="\t", header=False, index=False
+#     "./data/embedding_weights_5k.tsv", sep="\t", header=False, index=False
 # )
 # product_map_df[product_map_df["encoded_product_id"] <= 5000].to_csv(
-#     "marnix-single-flow-rnn/data/product_mapping_5k.tsv", sep="\t", index=False
+#     "./data/product_mapping_5k.tsv", sep="\t", index=False
 # )
