@@ -28,7 +28,7 @@ warnings.simplefilter(action="ignore", category=FutureWarning)
 # run settings
 DRY_RUN = False  # runs flow on small subset of data for speed and disables mlfow tracking
 LOGGING = True  # mlflow experiment logging
-WEEKS_OF_DATA = 3  # use 1, 2, 3 or 4 weeks worth of data (currently in production is 1 week)
+WEEKS_OF_DATA = 2  # use 1, 2, 3 or 4 weeks worth of data (currently in production is 1 week)
 
 # define where we run and on which device (GPU/CPU)
 # GPU_AVAILABLE = tf.test.is_gpu_available(cuda_only=False, min_cuda_compute_capability=None)
@@ -50,20 +50,20 @@ print("🧠 Running TensorFlow version {} on {}".format(tf.__version__, DEVICE))
 
 # data constants
 N_TOP_PRODUCTS = 15000  # note, 6000 is ~70% views, 8000 ~80%, 10000 ~84%, 12000 ~87%, 15000 ~90%
-MIN_PRODUCTS_TRAIN = 2  # sequences with less products (excluding target) are invalid and removed
-MIN_PRODUCTS_TEST = 2  # sequences with less products (excluding target) are invalid and removed
+MIN_PRODUCTS_TRAIN = 1  # sequences with less products (excluding target) are invalid and removed
+MIN_PRODUCTS_TEST = 1  # sequences with less products (excluding target) are invalid and removed
 WINDOW_LEN = 5  # fixed moving window size for generating input-sequence/target rows for training
 PRED_LOOKBACK = 5  # number of most recent products used per sequence in the test set to predict on
 TOP_K_OUTPUT_LEN = 10  # number of top K product recommendations to extract from the probabilities
 
 # model constants
-EMBED_DIM = 48  # number of dimensions for the embeddings
+EMBED_DIM = 56  # number of dimensions for the embeddings
 N_HIDDEN_UNITS = 192  # number of units in the GRU layers
-MAX_EPOCHS = 24  # maximum number of epochs to train for
-BATCH_SIZE = 1024  # batch size for training (512 slower+more accurate, 1024 faster+less accurate)
-DROPOUT = 0.25  # input data dropout
-RECURRENT_DROPOUT = 0.25  # recurrent state dropout during training, fast CuDNN GPU requires 0!
-LEARNING_RATE = 0.002
+MAX_EPOCHS = 32  # maximum number of epochs to train for
+BATCH_SIZE = 1024  # batch size for training
+DROPOUT = 0.2  # input data dropout
+RECURRENT_DROPOUT = 0.2  # recurrent state dropout during training, fast CuDNN GPU requires 0!
+LEARNING_RATE = 0.01
 OPTIMIZER = tf.keras.optimizers.Nadam(
     learning_rate=LEARNING_RATE
 )  # note, tested a couple (RMSProp, Adam, Nadam), Adam and Nadam both seem fast with good results
@@ -71,15 +71,15 @@ OPTIMIZER = tf.keras.optimizers.Nadam(
 # Automatic FP16 mixed-precision training instead of FP32 for gradients and model weights
 # See: https://docs.nvidia.com/deeplearning/sdk/mixed-precision-training/index.html#tensorflow-amp
 # Needs more investigation in terms of speed, gives a warning for memory heavy tensor conversion
-OPTIMIZER = tf.train.experimental.enable_mixed_precision_graph_rewrite(OPTIMIZER)
+# OPTIMIZER = tf.train.experimental.enable_mixed_precision_graph_rewrite(OPTIMIZER)
 
 # training constants
-TRAIN_RATIO = 0.8
-VAL_RATIO = 0.1  # note, creates a gap in time between train/test, no val improves performance
-TEST_RATIO = 0.1  # note, this % results in more samples when more weeks of data are used
-SHUFFLE_TRAIN_SET = True  # shuffles the training sequences (row-wise), seems smart for training
+TRAIN_RATIO = 0.7
+VAL_RATIO = 0.15  # note, creates a gap in time between train/test, no val improves performance
+TEST_RATIO = 0.15  # note, this % results in more samples when more weeks of data are used
+SHUFFLE_TRAIN_SET = False  # shuffles the training sequences (row-wise), seems smart for training
 SHUFFLE_TRAIN_AND_VAL_SET = False  # shuffles both the training and validation sequences
-DATA_IMBALANCE_CORRECTION = True  # Supply product weights during model training to avoid bias
+DATA_IMBALANCE_CORRECTION = False  # Supply product weights during model training to avoid bias
 
 # dry run constants for development and debugging
 if DRY_RUN:
@@ -129,10 +129,10 @@ if DRY_RUN:
     sequence_df = pd.read_csv(DATA_PATH3)
     sequence_df = sequence_df.tail(SEQUENCES).copy()  # take a small subset of data for debugging
 elif WEEKS_OF_DATA == 2:
-    sequence_df = pd.read_csv(DATA_PATH2)
-    sequence_df2 = pd.read_csv(DATA_PATH3)
-    sequence_df = sequence_df.append(sequence_df2)
-    del sequence_df2
+    sequence_df3 = pd.read_csv(DATA_PATH3)
+    sequence_df4 = pd.read_csv(DATA_PATH4)
+    sequence_df = sequence_df3.append(sequence_df4)
+    del sequence_df3, sequence_df4
 elif WEEKS_OF_DATA == 3:
     sequence_df2 = pd.read_csv(DATA_PATH2)
     sequence_df3 = pd.read_csv(DATA_PATH3)
@@ -670,6 +670,7 @@ if LOGGING and not DRY_RUN:
     mlflow.log_param("min_products_train", MIN_PRODUCTS_TRAIN)
     mlflow.log_param("min_products_test", MIN_PRODUCTS_TEST)
     mlflow.log_param("shuffle_training", SHUFFLE_TRAIN_SET)
+    mlflow.log_param("shuffle_val", SHUFFLE_TRAIN_AND_VAL_SET)
     mlflow.log_param("epochs", epochs[-1])
     mlflow.log_param("test_ratio", TEST_RATIO)
     mlflow.log_param("weeks_of_data", WEEKS_OF_DATA)
@@ -688,6 +689,10 @@ if LOGGING and not DRY_RUN:
     # Log artifacts
     mlflow.log_artifact("marnix-single-flow-rnn/gru_tf2_keras_embedding.py")  # log executed code
     mlflow.log_artifact("marnix-single-flow-rnn/plots/validation_plots.png")  # log validation plots
+    file = "marnix-single-flow-rnn/model_config.txt"  # log detailed model settings
+    with open(file, "w") as model_config:
+        model_config.write("{}".format(model.get_config()))
+    mlflow.log_artifact("marnix-single-flow-rnn/model_config.txt")
 
     mlflow.end_run()
 
