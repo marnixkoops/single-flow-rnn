@@ -58,12 +58,12 @@ TOP_K_OUTPUT_LEN = 10  # number of top K product recommendations to extract from
 
 # model constants
 EMBED_DIM = 56  # number of dimensions for the embeddings
-N_HIDDEN_UNITS = 208  # number of units in the GRU layers
+N_HIDDEN_UNITS = 192  # number of units in the GRU layers
 MAX_EPOCHS = 32  # maximum number of epochs to train for
 BATCH_SIZE = 1024  # batch size for training
-DROPOUT = 0.15  # input data dropout
-RECURRENT_DROPOUT = 0.15  # recurrent state dropout during training, fast CuDNN GPU requires 0!
-LEARNING_RATE = 0.005
+DROPOUT = 0.4  # node dropout
+RECURRENT_DROPOUT = 0.2  # recurrent state dropout during training, fast CuDNN GPU requires 0!
+LEARNING_RATE = 0.004
 OPTIMIZER = tf.keras.optimizers.Nadam(
     learning_rate=LEARNING_RATE
 )  # note, tested a couple (RMSProp, Adam, Nadam), Adam and Nadam both seem fast with good results
